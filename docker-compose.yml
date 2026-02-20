@@ -1,0 +1,86 @@
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: linkedin_autopilot_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-linkedin_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-linkedin_password}
+      POSTGRES_DB: ${POSTGRES_DB:-linkedin_autopilot}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-linkedin_user} -d ${POSTGRES_DB:-linkedin_autopilot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: linkedin_autopilot_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: linkedin_autopilot_api
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-linkedin_user}:${POSTGRES_PASSWORD:-linkedin_password}@postgres:5432/${POSTGRES_DB:-linkedin_autopilot}
+      REDIS_URL: redis://redis:6379
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
+      ALGORITHM: ${ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/api/app:/app/app
+
+  worker:
+    build:
+      context: ./apps/worker
+      dockerfile: Dockerfile
+    container_name: linkedin_autopilot_worker
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-linkedin_user}:${POSTGRES_PASSWORD:-linkedin_password}@postgres:5432/${POSTGRES_DB:-linkedin_autopilot}
+      REDIS_URL: redis://redis:6379
+      LINKEDIN_SESSION_COOKIE: ${LINKEDIN_SESSION_COOKIE:-}
+      HEADLESS_BROWSER: ${HEADLESS_BROWSER:-true}
+      BROWSER_TIMEOUT: ${BROWSER_TIMEOUT:-30000}
+      DAILY_SEARCH_LIMIT: ${DAILY_SEARCH_LIMIT:-50}
+      DAILY_APPLICATION_LIMIT: ${DAILY_APPLICATION_LIMIT:-20}
+      MIN_ACTION_DELAY: ${MIN_ACTION_DELAY:-1.0}
+      MAX_ACTION_DELAY: ${MAX_ACTION_DELAY:-3.0}
+      MIN_NAVIGATION_DELAY: ${MIN_NAVIGATION_DELAY:-2.0}
+      MAX_NAVIGATION_DELAY: ${MAX_NAVIGATION_DELAY:-5.0}
+      MIN_SEARCH_DELAY: ${MIN_SEARCH_DELAY:-3.0}
+      MAX_SEARCH_DELAY: ${MAX_SEARCH_DELAY:-8.0}
+      MAX_RETRIES: ${MAX_RETRIES:-3}
+      BASE_BACKOFF_DELAY: ${BASE_BACKOFF_DELAY:-1.0}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

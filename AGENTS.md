@@ -164,6 +164,119 @@ Do NOT implement future phases prematurely.
 
 ---------------------------------------------------------------------
 
+## 10. Git Workflow (Non-Negotiable)
+
+Each phase in PRODUCT_PLAN.md must be developed on its own dedicated branch.
+A phase is NOT complete until every item in the checklist below is satisfied.
+Do NOT begin the next phase until the current phase is fully closed.
+
+---------------------------------------------------------------------
+
+### 10.1 Branch Naming Convention
+
+Branches are created from main before any work begins.
+
+Format:
+
+feature/phase-{N}-{short-description}
+
+Examples:
+- feature/phase-0-docker-setup
+- feature/phase-1-auth
+- feature/phase-2-job-search
+- feature/phase-3-llm-resume-tailoring
+- feature/phase-4-browser-automation
+- feature/phase-5-application-engine
+
+Branch names must match the phase they implement.
+One branch per phase. No combined branches.
+
+---------------------------------------------------------------------
+
+### 10.2 Branch Creation (Start of Every Phase)
+
+Before writing any code for a phase:
+
+git checkout main
+git pull origin main
+git checkout -b feature/phase-{N}-{short-description}
+
+Never work directly on main.
+Never start a phase on an existing feature branch.
+
+---------------------------------------------------------------------
+
+### 10.3 Phase Completion Checklist
+
+A phase is closed ONLY when ALL of the following are true:
+
+1. All acceptance criteria defined in PRODUCT_PLAN.md are satisfied.
+
+2. Test coverage is 90% or above.
+   Run and confirm:
+
+   pytest --cov=app --cov-report=term-missing --cov-fail-under=90
+
+   Coverage below 90% blocks phase closure.
+   Write missing tests before proceeding.
+
+3. All code is committed and clean.
+   - No uncommitted changes (git status must be clean)
+   - No debug code or commented-out blocks in production paths
+   - No undocumented environment variables
+   - All migrations included in the commit
+
+   Commit format (conventional commits):
+
+   feat(phase-N): <concise description>   ← new functionality
+   fix(phase-N): <concise description>    ← bug fix within phase
+   chore(phase-N): <concise description>  ← config, migration, tooling
+
+4. Branch is pushed to origin and confirmed:
+
+   git push origin feature/phase-{N}-{short-description}
+
+   Confirm the push is acknowledged by origin with no errors.
+
+---------------------------------------------------------------------
+
+### 10.4 Phase Completion Flow
+
+Create branch from main
+        │
+        ▼
+Build phase features
+        │
+        ▼
+All acceptance criteria met?
+    No  → Continue building
+    Yes → Run test coverage
+        │
+        ▼
+Coverage ≥ 90%?
+    No  → Write missing tests → Re-run
+    Yes → Continue
+        │
+        ▼
+git add . && git commit -m "feat(phase-N): ..."
+        │
+        ▼
+git push origin feature/phase-{N}-{short-description}
+        │
+        ▼
+Phase CLOSED — await instruction to begin next phase
+
+---------------------------------------------------------------------
+
+### 10.5 Commit Hygiene
+
+- One logical unit of work per commit where possible.
+- Do not commit broken or untested code.
+- Do not bundle multiple phases into one commit.
+- Migration files must be committed alongside the model changes they support.
+
+---------------------------------------------------------------------
+
 # PART 2 — AI ENGINEERING REVIEW CONTRACT
 (Activated ONLY when explicitly invoked)
 
@@ -190,7 +303,7 @@ For normal development, default behavior applies.
 ## 1.3 Engineering Balance
 - Avoid under-engineering.
 - Avoid premature abstraction.
-- Aim for “engineered enough.”
+- Aim for "engineered enough."
 
 ## 1.4 Explicit > Clever
 - Prefer clarity over terseness.

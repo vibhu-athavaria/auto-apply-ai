@@ -63,3 +63,10 @@ Thumbs.db
 
 # Playwright
 playwright/.local-browsers/
+
+# Node.js
+node_modules/
+.npm
+.npmrc
+*.tsbuildinfo
+.next/

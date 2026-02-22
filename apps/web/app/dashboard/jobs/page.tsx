@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import DashboardLayout from '@/components/DashboardLayout';
 import { jobsApi, profileApi } from '@/lib/api';
@@ -26,7 +26,7 @@ interface JobSearchProfile {
   location: string;
 }
 
-export default function JobsPage() {
+function JobsContent() {
   const searchParams = useSearchParams();
   const profileIdFromUrl = searchParams.get('profile');
 
@@ -293,5 +293,19 @@ export default function JobsPage() {
         )}
       </div>
     </DashboardLayout>
+  );
+}
+
+export default function JobsPage() {
+  return (
+    <Suspense fallback={
+      <DashboardLayout>
+        <div className="flex items-center justify-center py-12">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-linkedin-blue"></div>
+        </div>
+      </DashboardLayout>
+    }>
+      <JobsContent />
+    </Suspense>
   );
 }

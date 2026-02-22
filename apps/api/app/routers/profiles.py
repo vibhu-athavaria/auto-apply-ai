@@ -5,7 +5,7 @@ from sqlalchemy.future import select
 
 from app.database import get_db
 from app.models.user import User
-from app.models.job_search_profile import JobSearchProfile
+from app.models.job_search_profile import JobSearchProfile as JobSearchProfileModel
 from app.schemas.job_search_profile import (
     JobSearchProfileCreate,
     JobSearchProfileUpdate,
@@ -21,9 +21,9 @@ async def create_profile(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    db_profile = JobSearchProfile(
+    db_profile = JobSearchProfileModel(
         user_id=current_user.id,
-        **profile.dict()
+        **profile.model_dump()
     )
     db.add(db_profile)
     await db.commit()
@@ -36,9 +36,9 @@ async def get_profiles(
     db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(
-        select(JobSearchProfile)
-        .where(JobSearchProfile.user_id == current_user.id)
-        .order_by(JobSearchProfile.created_at.desc())
+        select(JobSearchProfileModel)
+        .where(JobSearchProfileModel.user_id == current_user.id)
+        .order_by(JobSearchProfileModel.created_at.desc())
     )
     return result.scalars().all()
 
@@ -50,16 +50,16 @@ async def update_profile(
     db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(
-        select(JobSearchProfile)
-        .where(JobSearchProfile.id == profile_id)
-        .where(JobSearchProfile.user_id == current_user.id)
+        select(JobSearchProfileModel)
+        .where(JobSearchProfileModel.id == profile_id)
+        .where(JobSearchProfileModel.user_id == current_user.id)
     )
     db_profile = result.scalars().first()
 
     if not db_profile:
         raise HTTPException(status_code=404, detail="Profile not found")
 
-    update_data = profile_update.dict(exclude_unset=True)
+    update_data = profile_update.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(db_profile, key, value)
 

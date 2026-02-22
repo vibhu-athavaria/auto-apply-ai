@@ -87,17 +87,20 @@ Detection risk minimization is mandatory.
 
 Redis must be used for:
 
-- Job search caching (24h TTL)
+- Job search result caching
 - LLM result caching
 - Deduplication keys
 - Rate limiting
 - Background job queue
+
+TTL values for each key type are defined in PRODUCT_PLAN.md.
 
 Key format:
 
 li_autopilot:{service}:{entity}:{identifier}
 
 No arbitrary key names allowed.
+Every new Redis key must follow this format without exception.
 
 ---------------------------------------------------------------------
 
@@ -156,71 +159,140 @@ System must track:
 
 ---------------------------------------------------------------------
 
-## 9. Implementation Order
+## 9. Fail Fast Philosophy (Non-Negotiable)
+
+Over-protective, defensive programming is forbidden.
+The system must fail loudly, immediately, and at the exact point of failure.
+
+### Core Principle
+
+If a required condition is not met — raise an exception.
+Do NOT silently handle it, substitute a default, or let execution continue.
+
+A function that requires a value must receive that value.
+If it does not, it must raise immediately — not guess, not skip, not log-and-continue.
+
+A crash with a clear error message is always preferable to corrupted or silent behaviour.
+
+---------------------------------------------------------------------
+
+### Hard Rules
+
+1. Required function arguments must be enforced at the call site.
+   If a DB query requires user_id or job_id, the caller must pass it.
+   The function must NOT check for None and silently return early.
+
+   FORBIDDEN — hides the real bug:
+
+   def get_application(user_id: UUID | None):
+       if not user_id:
+           return None
+
+   REQUIRED — fails at the right place:
+
+   def get_application(user_id: UUID):
+       # user_id is guaranteed non-null by type contract
+       ...
+
+2. No silent fallbacks for missing required data.
+   If a required DB record does not exist, raise 404 or a domain exception.
+   Do NOT return an empty object, None, or a default placeholder.
+
+3. No swallowed exceptions.
+
+   FORBIDDEN:
+
+   try:
+       result = some_operation()
+   except Exception:
+       pass
+
+   REQUIRED — catch only what you handle, re-raise everything else:
+
+   try:
+       result = some_operation()
+   except SpecificException as e:
+       logger.error("specific failure", error=str(e))
+       raise
+
+4. No default substitution for invalid state.
+   If the system enters an unexpected state (unknown job status,
+   missing Redis dedup key, invalid automation action), raise immediately.
+   Do NOT attempt to recover silently.
+
+5. Pydantic validation must be strict.
+   All required fields are non-optional in schemas.
+   Do NOT use Optional for fields that are functionally required.
+   Validation failure must surface as 422 immediately — not be caught and masked.
+
+6. Type hints are contracts, not suggestions.
+   If a function is typed to receive UUID, it must receive UUID.
+   Functions must not internally guard against None or str
+   unless the type hint explicitly declares it.
+
+---------------------------------------------------------------------
+
+### Where Defensive Handling IS Acceptable
+
+The only legitimate cases for defensive handling in this system:
+
+- LinkedIn automation (Playwright, scraping)
+  — external system, unpredictable failures. Catch, log, use exponential backoff, retry.
+- LLM API calls
+  — external dependency. Catch, log, check cache, retry. Fail task after max retries.
+- Celery task retries
+  — transient failures are expected. max_retries is intentional, not defensive.
+- Redis cache miss with DB fallback
+  — explicitly defined in the architecture. Acceptable and documented.
+
+Everything else: fail fast, fail loudly.
+
+---------------------------------------------------------------------
+## 10. Implementation Order
 
 Development must follow PRODUCT_PLAN.md phases sequentially.
+The phase sequence, branch names, and acceptance criteria are defined in PRODUCT_PLAN.md.
 
 Do NOT implement future phases prematurely.
+Do NOT begin a new phase until the current phase is fully closed per the Git Workflow rules below.
 
 ---------------------------------------------------------------------
 
-## 10. Git Workflow (Non-Negotiable)
 
-Each phase in PRODUCT_PLAN.md must be developed on its own dedicated branch.
-A phase is NOT complete until every item in the checklist below is satisfied.
-Do NOT begin the next phase until the current phase is fully closed.
+## 11. Git Workflow (Non-Negotiable)
 
----------------------------------------------------------------------
-
-### 10.1 Branch Naming Convention
-
-Branches are created from main before any work begins.
-
-Format:
-
-feature/phase-{N}-{short-description}
-
-Examples:
-- feature/phase-0-docker-setup
-- feature/phase-1-auth
-- feature/phase-2-job-search
-- feature/phase-3-llm-resume-tailoring
-- feature/phase-4-browser-automation
-- feature/phase-5-application-engine
-
-Branch names must match the phase they implement.
-One branch per phase. No combined branches.
+Every unit of work is developed on its own dedicated branch.
+Work is never done directly on main.
 
 ---------------------------------------------------------------------
 
-### 10.2 Branch Creation (Start of Every Phase)
+### 11.1 Branch Convention
 
-Before writing any code for a phase:
+Create branches from main before writing any code:
 
 git checkout main
 git pull origin main
-git checkout -b feature/phase-{N}-{short-description}
+git checkout -b feature/{short-description}
 
-Never work directly on main.
-Never start a phase on an existing feature branch.
+Branch names must be lowercase, hyphenated, and descriptive.
+One branch per logical unit of work. No combined branches.
 
 ---------------------------------------------------------------------
 
-### 10.3 Phase Completion Checklist
+### 11.2 Work Completion Requirements
 
-A phase is closed ONLY when ALL of the following are true:
+A branch is NOT ready to close until ALL of the following are true:
 
-1. All acceptance criteria defined in PRODUCT_PLAN.md are satisfied.
+1. All acceptance criteria met — as defined in PRODUCT_PLAN.md for the current phase.
 
-2. Test coverage is 90% or above.
-   Run and confirm:
+2. Test coverage is 90% or above — enforced by the test runner, not self-assessed.
 
    pytest --cov=app --cov-report=term-missing --cov-fail-under=90
 
-   Coverage below 90% blocks phase closure.
+   Coverage below 90% blocks closure.
    Write missing tests before proceeding.
 
-3. All code is committed and clean.
+3. Code is clean and committed:
    - No uncommitted changes (git status must be clean)
    - No debug code or commented-out blocks in production paths
    - No undocumented environment variables
@@ -228,52 +300,24 @@ A phase is closed ONLY when ALL of the following are true:
 
    Commit format (conventional commits):
 
-   feat(phase-N): <concise description>   ← new functionality
-   fix(phase-N): <concise description>    ← bug fix within phase
-   chore(phase-N): <concise description>  ← config, migration, tooling
+   feat(scope):  new functionality
+   fix(scope):   bug fix
+   chore(scope): config, migration, tooling
 
 4. Branch is pushed to origin and confirmed:
 
-   git push origin feature/phase-{N}-{short-description}
+   git push origin feature/{short-description}
 
    Confirm the push is acknowledged by origin with no errors.
 
 ---------------------------------------------------------------------
 
-### 10.4 Phase Completion Flow
-
-Create branch from main
-        │
-        ▼
-Build phase features
-        │
-        ▼
-All acceptance criteria met?
-    No  → Continue building
-    Yes → Run test coverage
-        │
-        ▼
-Coverage ≥ 90%?
-    No  → Write missing tests → Re-run
-    Yes → Continue
-        │
-        ▼
-git add . && git commit -m "feat(phase-N): ..."
-        │
-        ▼
-git push origin feature/phase-{N}-{short-description}
-        │
-        ▼
-Phase CLOSED — await instruction to begin next phase
-
----------------------------------------------------------------------
-
-### 10.5 Commit Hygiene
+### 11.3 Commit Hygiene
 
 - One logical unit of work per commit where possible.
-- Do not commit broken or untested code.
-- Do not bundle multiple phases into one commit.
+- Do not commit broken or untested code at any point.
 - Migration files must be committed alongside the model changes they support.
+- Do not bundle unrelated changes into one commit.
 
 ---------------------------------------------------------------------
 

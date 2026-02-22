@@ -11,6 +11,7 @@ from app.database import Base, get_db
 from app.models.user import User
 from app.utils.security import get_password_hash, create_access_token
 from app.services.queue_service import get_queue_service
+from app.services.llm_service import get_llm_service
 
 # Test database URL (using SQLite for tests)
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -42,6 +43,7 @@ def mock_redis():
     mock = AsyncMock()
     mock.get = AsyncMock(return_value=None)
     mock.setex = AsyncMock(return_value=True)
+    mock.set = AsyncMock(return_value=True)
     mock.rpush = AsyncMock(return_value=1)
     mock.close = AsyncMock()
     return mock
@@ -61,8 +63,15 @@ async def client(
         queue_service = QueueService(mock_redis)
         yield queue_service
 
+    async def override_get_llm_service():
+        # Create a mock LLMService with the mock redis
+        from app.services.llm_service import LLMService
+        llm_service = LLMService(mock_redis)
+        yield llm_service
+
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_queue_service] = override_get_queue_service
+    app.dependency_overrides[get_llm_service] = override_get_llm_service
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

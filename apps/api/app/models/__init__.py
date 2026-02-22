@@ -3,6 +3,8 @@ from app.models.user import User, TimestampMixin
 from app.models.resume import Resume
 from app.models.job_search_profile import JobSearchProfile
 from app.models.job import Job
+from app.models.tailored_resume import TailoredResume
+from app.models.llm_usage_log import LLMUsageLog
 
 __all__ = [
     "Base",
@@ -11,4 +13,6 @@ __all__ = [
     "Resume",
     "JobSearchProfile",
     "Job",
+    "TailoredResume",
+    "LLMUsageLog",
 ]

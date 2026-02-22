@@ -590,3 +590,597 @@ Phase 2 introduces the Worker service architecture with strict separation from t
 - **Postgres**: Persistent job storage with deduplication
 
 All automation follows safety patterns: randomized delays, rate limiting, exponential backoff, and idempotency.
+
+---
+
+# PHASE 3 - Resume Tailoring Engine
+
+Phase 3 introduces AI-powered resume tailoring with mandatory caching and cost tracking. The system generates tailored resumes and cover letters based on job descriptions using LLM providers.
+
+## Critical Architecture Rules (Non-Negotiable)
+
+Per AGENTS.md, the following rules are mandatory for LLM operations:
+
+1. **LLM calls without caching are FORBIDDEN**
+2. **Before ANY LLM call**:
+   - Generate deterministic hash: `hash(resume + job_description)`
+   - Check Redis cache
+   - If cached → return cached result
+   - If not cached → call LLM, log tokens, store in Redis
+3. **Never log raw resumes or LLM tokens**
+4. **Track cumulative cost per user**
+
+## Folder Structure (Updated)
+
+```
+apps/
+  api/
+    app/
+      models/
+        tailored_resume.py       # NEW: TailoredResume model
+        llm_usage_log.py         # NEW: LLMUsageLog model
+      schemas/
+        tailored_resume.py       # NEW: Tailored resume schemas
+        llm_usage.py             # NEW: LLM usage tracking schemas
+      routers/
+        tailor.py                # NEW: Resume tailoring endpoint
+      services/
+        resume_tailor_service.py # NEW: Core tailoring logic with caching
+        llm_client.py            # NEW: LLM provider client wrapper
+        cost_tracker.py          # NEW: Cost tracking service
+    ...
+  worker/
+    # LLM calls happen in Worker, not API
+    llm/                         # NEW: LLM integration module
+      __init__.py
+      openai_client.py           # OpenAI API client
+      anthropic_client.py        # Anthropic API client (optional)
+      cache.py                   # LLM response caching
+    tasks/
+      tailor_task.py             # NEW: Background tailoring task
+    ...
+```
+
+## Database Schema (Phase 3)
+
+### tailored_resumes Table
+
+```sql
+CREATE TABLE tailored_resumes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    job_id UUID NOT NULL REFERENCES jobs(id),
+    original_resume_id UUID NOT NULL REFERENCES resumes(id),
+
+    -- Content hash for cache key
+    content_hash VARCHAR(64) NOT NULL,  -- SHA-256 hash of resume + job_description
+
+    -- Tailored outputs
+    tailored_resume_text TEXT NOT NULL,
+    cover_letter_text TEXT,
+
+    -- Metadata
+    model_used VARCHAR(100) NOT NULL,        -- e.g., 'gpt-4', 'claude-3-opus'
+    prompt_tokens INTEGER NOT NULL,
+    completion_tokens INTEGER NOT NULL,
+    estimated_cost_usd DECIMAL(10, 6) NOT NULL,
+
+    -- Timestamps
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+
+    -- Constraints
+    UNIQUE(job_id, original_resume_id),      -- One tailored resume per job/resume pair
+    INDEX idx_tailored_resumes_user_id (user_id),
+    INDEX idx_tailored_resumes_job_id (job_id),
+    INDEX idx_tailored_resumes_content_hash (content_hash)
+);
+```
+
+### Field Descriptions
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | UUID | Primary key |
+| user_id | UUID | Reference to the user who owns this tailored resume |
+| job_id | UUID | Reference to the job this resume is tailored for |
+| original_resume_id | UUID | Reference to the source resume |
+| content_hash | VARCHAR(64) | SHA-256 hash of `resume_content + job_description`. Used as Redis cache key component. |
+| tailored_resume_text | TEXT | The AI-generated tailored resume content |
+| cover_letter_text | TEXT | Optional AI-generated cover letter |
+| model_used | VARCHAR(100) | LLM model identifier for reproducibility and cost tracking |
+| prompt_tokens | INTEGER | Number of tokens in the prompt |
+| completion_tokens | INTEGER | Number of tokens in the completion |
+| estimated_cost_usd | DECIMAL(10, 6) | Calculated cost based on token usage |
+
+### llm_usage_logs Table
+
+```sql
+CREATE TABLE llm_usage_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+
+    -- Request identification
+    request_type VARCHAR(50) NOT NULL,       -- 'resume_tailor', 'cover_letter', etc.
+    content_hash VARCHAR(64) NOT NULL,       -- For cache hit tracking
+
+    -- Token usage
+    prompt_tokens INTEGER NOT NULL,
+    completion_tokens INTEGER NOT NULL,
+    total_tokens INTEGER NOT NULL,
+
+    -- Cost tracking
+    model_used VARCHAR(100) NOT NULL,
+    cost_per_prompt_token DECIMAL(10, 8) NOT NULL,
+    cost_per_completion_token DECIMAL(10, 8) NOT NULL,
+    estimated_cost_usd DECIMAL(10, 6) NOT NULL,
+
+    -- Cache status
+    cache_hit BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- Timestamps
+    created_at TIMESTAMP DEFAULT NOW(),
+
+    -- Indexes
+    INDEX idx_llm_usage_logs_user_id (user_id),
+    INDEX idx_llm_usage_logs_created_at (created_at),
+    INDEX idx_llm_usage_logs_request_type (request_type),
+    INDEX idx_llm_usage_logs_cache_hit (cache_hit)
+);
+```
+
+### Field Descriptions
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | UUID | Primary key |
+| user_id | UUID | Reference to the user who initiated the LLM call |
+| request_type | VARCHAR(50) | Type of LLM request: 'resume_tailor', 'cover_letter', etc. |
+| content_hash | VARCHAR(64) | Hash of input content for deduplication tracking |
+| prompt_tokens | INTEGER | Tokens used in the prompt |
+| completion_tokens | INTEGER | Tokens generated in the completion |
+| total_tokens | INTEGER | Sum of prompt and completion tokens |
+| model_used | VARCHAR(100) | LLM model identifier |
+| cost_per_prompt_token | DECIMAL(10, 8) | Cost per input token at time of request |
+| cost_per_completion_token | DECIMAL(10, 8) | Cost per output token at time of request |
+| estimated_cost_usd | DECIMAL(10, 6) | Total calculated cost for this request |
+| cache_hit | BOOLEAN | Whether this was served from cache (cost = $0) |
+
+## LLM Caching Flow
+
+```mermaid
+flowchart TD
+    A[POST /jobs/id/tailor] --> B[Get resume content]
+    B --> C[Get job description]
+    C --> D[Generate content hash]
+    D --> E{Check Redis cache}
+
+    E -->|Cache Hit| F[Return cached result]
+    F --> G[Log cache hit to llm_usage_logs]
+    G --> H[Return tailored resume]
+
+    E -->|Cache Miss| I[Call LLM Provider]
+    I --> J[Log prompt tokens]
+    J --> K[Log completion tokens]
+    K --> L[Calculate estimated cost]
+    L --> M[Store result in Redis]
+    M --> N[Store in tailored_resumes table]
+    N --> O[Log to llm_usage_logs]
+    O --> P[Update user cost tracking]
+    P --> Q[Return tailored resume]
+
+    subgraph Cost Tracking
+        L
+        O
+        P
+    end
+
+    subgraph Caching Layer
+        E
+        M
+    end
+```
+
+## Redis Key Naming Conventions (Phase 3)
+
+All keys follow the format: `li_autopilot:{service}:{entity}:{identifier}`
+
+### LLM Caching
+
+| Key Pattern | TTL | Description |
+|-------------|-----|-------------|
+| `li_autopilot:api:llm_cache:{content_hash}` | 30 days | Cached LLM response for resume tailoring. Key is SHA-256 hash of normalized resume + job description. |
+| `li_autopilot:api:llm_cache:meta:{user_id}` | None | Metadata about user's cached responses for quick lookup. |
+
+### Cost Tracking
+
+| Key Pattern | TTL | Description |
+|-------------|-----|-------------|
+| `li_autopilot:api:cost:{user_id}:daily:{date}` | 7 days | Daily cost accumulator per user. |
+| `li_autopilot:api:cost:{user_id}:total` | None | Cumulative cost per user (persistent). |
+| `li_autopilot:api:cost:{user_id}:monthly:{month}` | 13 months | Monthly cost summary per user. |
+
+### Rate Limiting (LLM)
+
+| Key Pattern | TTL | Description |
+|-------------|-----|-------------|
+| `li_autopilot:api:rate_limit:{user_id}:llm_calls` | 24h | Daily LLM call count per user. |
+
+## Cost Tracking Architecture
+
+### Cost Calculation
+
+```python
+# services/cost_tracker.py
+from decimal import Decimal
+
+# Cost per 1K tokens (example rates, should be configurable)
+MODEL_COSTS = {
+    "gpt-4": {
+        "prompt": Decimal("0.03"),      # $0.03 per 1K prompt tokens
+        "completion": Decimal("0.06"),  # $0.06 per 1K completion tokens
+    },
+    "gpt-3.5-turbo": {
+        "prompt": Decimal("0.0015"),
+        "completion": Decimal("0.002"),
+    },
+    "claude-3-opus": {
+        "prompt": Decimal("0.015"),
+        "completion": Decimal("0.075"),
+    },
+}
+
+class CostTracker:
+    async def calculate_cost(
+        self,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int
+    ) -> Decimal:
+        rates = MODEL_COSTS.get(model)
+        if not rates:
+            raise ValueError(f"Unknown model: {model}")
+
+        prompt_cost = (Decimal(prompt_tokens) / 1000) * rates["prompt"]
+        completion_cost = (Decimal(completion_tokens) / 1000) * rates["completion"]
+
+        return prompt_cost + completion_cost
+
+    async def log_usage(
+        self,
+        user_id: str,
+        request_type: str,
+        content_hash: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        model: str,
+        cache_hit: bool = False
+    ) -> None:
+        cost = await self.calculate_cost(model, prompt_tokens, completion_tokens)
+
+        # Log to database
+        await self.db.execute(
+            """
+            INSERT INTO llm_usage_logs (
+                user_id, request_type, content_hash,
+                prompt_tokens, completion_tokens, total_tokens,
+                model_used, cost_per_prompt_token, cost_per_completion_token,
+                estimated_cost_usd, cache_hit
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            """,
+            user_id, request_type, content_hash,
+            prompt_tokens, completion_tokens, prompt_tokens + completion_tokens,
+            model, MODEL_COSTS[model]["prompt"], MODEL_COSTS[model]["completion"],
+            cost, cache_hit
+        )
+
+        # Update Redis counters (only for actual costs, not cache hits)
+        if not cache_hit:
+            await self.redis.incrbyfloat(
+                f"li_autopilot:api:cost:{user_id}:total",
+                float(cost)
+            )
+            await self.redis.incrbyfloat(
+                f"li_autopilot:api:cost:{user_id}:daily:{date.today()}",
+                float(cost)
+            )
+```
+
+### Content Hash Generation
+
+```python
+# services/resume_tailor_service.py
+import hashlib
+
+def generate_content_hash(resume_content: str, job_description: str) -> str:
+    """
+    Generate deterministic hash for cache key.
+
+    Normalizes inputs to ensure consistent hashing:
+    - Strip whitespace
+    - Lowercase
+    - Remove extra spaces
+    """
+    normalized_resume = " ".join(resume_content.lower().split())
+    normalized_job = " ".join(job_description.lower().split())
+
+    combined = f"{normalized_resume}|{normalized_job}"
+    return hashlib.sha256(combined.encode()).hexdigest()
+```
+
+## API Endpoints (Phase 3)
+
+### New Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/jobs/{id}/tailor` | Generate tailored resume for a job |
+| GET | `/jobs/{id}/tailored-resume` | Get existing tailored resume for a job |
+| GET | `/users/me/costs` | Get cost summary for current user |
+
+### POST /jobs/{id}/tailor Endpoint
+
+```python
+# routers/tailor.py
+from fastapi import APIRouter, Depends, HTTPException
+from app.services.resume_tailor_service import ResumeTailorService
+from app.schemas.tailored_resume import TailorRequest, TailorResponse
+
+router = APIRouter(prefix="/jobs", tags=["tailoring"])
+
+@router.post("/{job_id}/tailor", response_model=TailorResponse)
+async def tailor_resume(
+    job_id: str,
+    request: TailorRequest,
+    current_user: User = Depends(get_current_user),
+    tailor_service: ResumeTailorService = Depends(get_tailor_service)
+):
+    """
+    Generate a tailored resume for a specific job.
+
+    Flow:
+    1. Validate job exists and belongs to user
+    2. Validate resume exists and belongs to user
+    3. Generate content hash
+    4. Check Redis cache
+    5. If cached: return cached result, log cache hit
+    6. If not cached: call LLM, store result, log usage
+    7. Return tailored resume
+
+    Returns:
+        TailorResponse with tailored_resume_text, cover_letter_text,
+        and metadata (cache_hit, tokens_used, cost)
+    """
+    result = await tailor_service.tailor_resume(
+        user_id=current_user.id,
+        job_id=job_id,
+        resume_id=request.resume_id,
+        generate_cover_letter=request.generate_cover_letter
+    )
+    return result
+```
+
+### Request/Response Schemas
+
+```python
+# schemas/tailored_resume.py
+from pydantic import BaseModel, Field
+from typing import Optional
+from decimal import Decimal
+
+class TailorRequest(BaseModel):
+    resume_id: str = Field(..., description="UUID of the resume to tailor")
+    generate_cover_letter: bool = Field(
+        default=True,
+        description="Whether to also generate a cover letter"
+    )
+
+class TailorResponse(BaseModel):
+    id: str = Field(..., description="UUID of the tailored resume")
+    job_id: str
+    original_resume_id: str
+    tailored_resume_text: str
+    cover_letter_text: Optional[str] = None
+
+    # Metadata
+    cache_hit: bool = Field(..., description="Whether result was from cache")
+    model_used: str
+    prompt_tokens: int
+    completion_tokens: int
+    estimated_cost_usd: Decimal
+
+class CostSummary(BaseModel):
+    total_cost_usd: Decimal
+    total_tokens: int
+    total_requests: int
+    cache_hit_rate: float
+    daily_cost_usd: Decimal
+    monthly_cost_usd: Decimal
+```
+
+## ResumeTailorService Implementation
+
+```python
+# services/resume_tailor_service.py
+import hashlib
+from typing import Optional
+from decimal import Decimal
+
+class ResumeTailorService:
+    CACHE_TTL = 30 * 24 * 60 * 60  # 30 days
+
+    def __init__(
+        self,
+        db: AsyncSession,
+        redis: Redis,
+        llm_client: LLMClient,
+        cost_tracker: CostTracker
+    ):
+        self.db = db
+        self.redis = redis
+        self.llm_client = llm_client
+        self.cost_tracker = cost_tracker
+
+    async def tailor_resume(
+        self,
+        user_id: str,
+        job_id: str,
+        resume_id: str,
+        generate_cover_letter: bool = True
+    ) -> TailorResponse:
+        """
+        Tailor a resume for a specific job with mandatory caching.
+
+        MANDATORY FLOW (per AGENTS.md):
+        1. Generate deterministic hash
+        2. Check Redis cache
+        3. If cached → return cached result
+        4. If not cached:
+           - Call LLM
+           - Log prompt tokens
+           - Log completion tokens
+           - Log estimated cost
+           - Store result in Redis
+           - Update per-user cost tracking
+        """
+        # 1. Get resume and job content
+        resume = await self._get_resume(resume_id, user_id)
+        job = await self._get_job(job_id, user_id)
+
+        resume_content = await self._read_resume_file(resume.file_path)
+        job_description = job.description or ""
+
+        # 2. Generate deterministic hash
+        content_hash = self._generate_content_hash(resume_content, job_description)
+
+        # 3. Check Redis cache (MANDATORY)
+        cache_key = f"li_autopilot:api:llm_cache:{content_hash}"
+        cached_result = await self.redis.get(cache_key)
+
+        if cached_result:
+            # Cache hit - return without LLM call
+            await self.cost_tracker.log_usage(
+                user_id=user_id,
+                request_type="resume_tailor",
+                content_hash=content_hash,
+                prompt_tokens=0,
+                completion_tokens=0,
+                model="cached",
+                cache_hit=True
+            )
+            return self._parse_cached_result(cached_result, content_hash)
+
+        # 4. Cache miss - call LLM
+        llm_response = await self.llm_client.tailor_resume(
+            resume_content=resume_content,
+            job_description=job_description,
+            job_title=job.title,
+            company=job.company,
+            generate_cover_letter=generate_cover_letter
+        )
+
+        # 5. Log token usage (MANDATORY)
+        await self.cost_tracker.log_usage(
+            user_id=user_id,
+            request_type="resume_tailor",
+            content_hash=content_hash,
+            prompt_tokens=llm_response.prompt_tokens,
+            completion_tokens=llm_response.completion_tokens,
+            model=llm_response.model,
+            cache_hit=False
+        )
+
+        # 6. Store result in Redis (MANDATORY)
+        result_data = {
+            "tailored_resume_text": llm_response.tailored_resume,
+            "cover_letter_text": llm_response.cover_letter,
+            "model_used": llm_response.model,
+            "prompt_tokens": llm_response.prompt_tokens,
+            "completion_tokens": llm_response.completion_tokens,
+            "estimated_cost_usd": str(llm_response.estimated_cost)
+        }
+        await self.redis.setex(
+            cache_key,
+            self.CACHE_TTL,
+            json.dumps(result_data)
+        )
+
+        # 7. Store in database
+        tailored_resume = await self._store_tailored_resume(
+            user_id=user_id,
+            job_id=job_id,
+            original_resume_id=resume_id,
+            content_hash=content_hash,
+            tailored_resume_text=llm_response.tailored_resume,
+            cover_letter_text=llm_response.cover_letter,
+            model_used=llm_response.model,
+            prompt_tokens=llm_response.prompt_tokens,
+            completion_tokens=llm_response.completion_tokens,
+            estimated_cost=llm_response.estimated_cost
+        )
+
+        return TailorResponse(
+            id=tailored_resume.id,
+            job_id=job_id,
+            original_resume_id=resume_id,
+            tailored_resume_text=llm_response.tailored_resume,
+            cover_letter_text=llm_response.cover_letter,
+            cache_hit=False,
+            model_used=llm_response.model,
+            prompt_tokens=llm_response.prompt_tokens,
+            completion_tokens=llm_response.completion_tokens,
+            estimated_cost_usd=llm_response.estimated_cost
+        )
+
+    def _generate_content_hash(self, resume_content: str, job_description: str) -> str:
+        """Generate deterministic SHA-256 hash for cache key."""
+        normalized_resume = " ".join(resume_content.lower().split())
+        normalized_job = " ".join(job_description.lower().split())
+        combined = f"{normalized_resume}|{normalized_job}"
+        return hashlib.sha256(combined.encode()).hexdigest()
+```
+
+## Structured Logging Requirements (Phase 3)
+
+All LLM-related logs must include:
+
+```json
+{
+    "timestamp": "2024-01-15T10:30:00Z",
+    "level": "INFO",
+    "service": "api",
+    "user_id": "uuid-here",
+    "action": "llm_call",
+    "status": "success",
+    "request_type": "resume_tailor",
+    "model": "gpt-4",
+    "prompt_tokens": 1500,
+    "completion_tokens": 800,
+    "estimated_cost_usd": 0.093,
+    "cache_hit": false,
+    "duration_ms": 3500
+}
+```
+
+### Never Log
+
+- LinkedIn credentials
+- Raw resumes
+- LLM tokens (actual token content)
+- Session cookies (unencrypted)
+
+## Summary
+
+Phase 3 introduces AI-powered resume tailoring with strict cost control:
+
+- **Mandatory Caching**: Every LLM call must check Redis cache first
+- **Cost Tracking**: All token usage logged with per-user accumulation
+- **Deterministic Hashing**: `hash(resume + job_description)` for cache keys
+- **Database Storage**: `tailored_resumes` and `llm_usage_logs` tables
+- **Redis Keys**: Follow `li_autopilot:{service}:{entity}:{identifier}` format
+
+Key architectural decisions:
+1. LLM calls happen in Worker service (not API) for long-running operations
+2. Cache TTL is 30 days for tailored resumes
+3. Cost is tracked both in database (persistent) and Redis (fast access)
+4. Content hash ensures identical inputs never incur duplicate LLM costs

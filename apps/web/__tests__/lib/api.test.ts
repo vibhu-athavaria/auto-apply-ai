@@ -111,7 +111,7 @@ describe('API Client', () => {
 
       const result = await jobsApi.list('profile-id');
 
-      expect(mockedAxios.get).toHaveBeenCalled();
+      expect(mockedAxios.get).toHaveBeenCalledWith('/jobs/?search_profile_id=profile-id');
       expect(result).toEqual(mockResponse);
     });
 

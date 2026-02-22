@@ -36,9 +36,9 @@ describe('RegisterPage', () => {
   it('has password input fields', () => {
     render(<RegisterPage />);
 
-    // There are two password fields - password and confirm password
+    // There are exactly two password fields - password and confirm password
     const passwordInputs = screen.getAllByLabelText(/password/i);
-    expect(passwordInputs.length).toBeGreaterThanOrEqual(1);
+    expect(passwordInputs.length).toBe(2);
   });
 
   it('has submit button', () => {

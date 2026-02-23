@@ -3,8 +3,8 @@
 import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import DashboardLayout from '@/components/DashboardLayout';
-import { jobsApi, profileApi } from '@/lib/api';
-import { Briefcase, MapPin, ExternalLink, RefreshCw, CheckCircle, Clock, XCircle, Zap } from 'lucide-react';
+import { jobsApi, profileApi, resumeApi } from '@/lib/api';
+import { Briefcase, MapPin, ExternalLink, RefreshCw, CheckCircle, Clock, XCircle, Zap, Send, FileText, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import clsx from 'clsx';
 
@@ -26,6 +26,18 @@ interface JobSearchProfile {
   location: string;
 }
 
+interface Resume {
+  id: string;
+  filename: string;
+}
+
+interface TailoredResume {
+  id: string;
+  job_id: string;
+  tailored_resume_text: string;
+  cover_letter_text?: string;
+}
+
 function JobsContent() {
   const searchParams = useSearchParams();
   const profileIdFromUrl = searchParams.get('profile');
@@ -39,8 +51,17 @@ function JobsContent() {
   const [taskId, setTaskId] = useState<string | null>(null);
   const [taskStatus, setTaskStatus] = useState<string | null>(null);
 
+  const [resumes, setResumes] = useState<Resume[]>([]);
+  const [tailoredResumes, setTailoredResumes] = useState<Record<string, TailoredResume>>({});
+  const [applyingJobs, setApplyingJobs] = useState<Set<string>>(new Set());
+  const [tailoringJobs, setTailoringJobs] = useState<Set<string>>(new Set());
+  const [selectedResumeId, setSelectedResumeId] = useState<string>('');
+  const [showApplyModal, setShowApplyModal] = useState<string | null>(null);
+  const [applicationTasks, setApplicationTasks] = useState<Record<string, string>>({});
+
   useEffect(() => {
     loadProfiles();
+    loadResumes();
   }, []);
 
   useEffect(() => {
@@ -78,6 +99,35 @@ function JobsContent() {
     }
   }, [taskId, taskStatus]);
 
+  useEffect(() => {
+    const taskIds = Object.values(applicationTasks);
+    if (taskIds.length > 0) {
+      const interval = setInterval(async () => {
+        for (const [jobId, taskId] of Object.entries(applicationTasks)) {
+          try {
+            const status = await jobsApi.getSearchStatus(taskId);
+            if (status.status === 'completed' || status.status === 'failed') {
+              setApplicationTasks(prev => {
+                const updated = { ...prev };
+                delete updated[jobId];
+                return updated;
+              });
+              if (status.status === 'completed') {
+                toast.success('Application submitted!');
+                loadJobs();
+              } else {
+                toast.error('Application failed');
+              }
+            }
+          } catch (error) {
+            // Ignore errors
+          }
+        }
+      }, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [applicationTasks]);
+
   const loadProfiles = async () => {
     try {
       const data = await profileApi.list();
@@ -87,6 +137,18 @@ function JobsContent() {
       }
     } catch (error) {
       console.error('Failed to load profiles:', error);
+    }
+  };
+
+  const loadResumes = async () => {
+    try {
+      const data = await resumeApi.list();
+      setResumes(data);
+      if (data.length > 0) {
+        setSelectedResumeId(data[0].id);
+      }
+    } catch (error) {
+      console.error('Failed to load resumes:', error);
     }
   };
 
@@ -120,6 +182,57 @@ function JobsContent() {
       toast.error(message);
     } finally {
       setIsSearching(false);
+    }
+  };
+
+  const handleTailor = async (jobId: string) => {
+    if (!selectedResumeId) {
+      toast.error('Please upload a resume first');
+      return;
+    }
+
+    setTailoringJobs(prev => new Set(prev).add(jobId));
+    try {
+      const result = await jobsApi.tailor(jobId, selectedResumeId);
+      setTailoredResumes(prev => ({
+        ...prev,
+        [jobId]: result
+      }));
+      toast.success('Resume tailored successfully!');
+    } catch (error: any) {
+      const message = error.response?.data?.detail || 'Failed to tailor resume';
+      toast.error(message);
+    } finally {
+      setTailoringJobs(prev => {
+        const updated = new Set(prev);
+        updated.delete(jobId);
+        return updated;
+      });
+    }
+  };
+
+  const handleApply = async (jobId: string) => {
+    const tailoredResume = tailoredResumes[jobId];
+    
+    setApplyingJobs(prev => new Set(prev).add(jobId));
+    setShowApplyModal(null);
+    
+    try {
+      const result = await jobsApi.apply(jobId, tailoredResume?.id);
+      setApplicationTasks(prev => ({
+        ...prev,
+        [jobId]: result.task_id
+      }));
+      toast.success('Application queued!');
+    } catch (error: any) {
+      const message = error.response?.data?.detail || 'Failed to apply';
+      toast.error(message);
+    } finally {
+      setApplyingJobs(prev => {
+        const updated = new Set(prev);
+        updated.delete(jobId);
+        return updated;
+      });
     }
   };
 
@@ -243,52 +356,157 @@ function JobsContent() {
           </div>
         ) : (
           <div className="space-y-4">
-            {jobs.map((job) => (
-              <div key={job.id} className="card hover:shadow-md transition-shadow">
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-start gap-3">
-                      <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                        <Briefcase className="h-5 w-5 text-linkedin-blue" />
-                      </div>
-                      <div>
-                        <h3 className="font-semibold text-gray-900">{job.title}</h3>
-                        <p className="text-gray-600">{job.company}</p>
-                        <div className="flex items-center gap-4 mt-2 text-sm text-gray-500">
-                          <div className="flex items-center gap-1">
-                            <MapPin className="h-4 w-4" />
-                            {job.location}
-                          </div>
-                          <div className="flex items-center gap-1">
-                            {getStatusIcon(job.status)}
-                            <span className={clsx('px-2 py-0.5 rounded-full text-xs font-medium', getStatusBadge(job.status))}>
-                              {job.status}
-                            </span>
-                          </div>
-                          {job.easy_apply && (
-                            <div className="flex items-center gap-1 text-green-600">
-                              <Zap className="h-4 w-4" />
-                              Easy Apply
+            {jobs.map((job) => {
+              const isApplying = applyingJobs.has(job.id);
+              const isTailoring = tailoringJobs.has(job.id);
+              const hasTailored = !!tailoredResumes[job.id];
+              const isApplied = job.status === 'applied';
+              const isQueued = !!applicationTasks[job.id];
+
+              return (
+                <div key={job.id} className="card hover:shadow-md transition-shadow">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-start gap-3">
+                        <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                          <Briefcase className="h-5 w-5 text-linkedin-blue" />
+                        </div>
+                        <div className="flex-1">
+                          <h3 className="font-semibold text-gray-900">{job.title}</h3>
+                          <p className="text-gray-600">{job.company}</p>
+                          <div className="flex items-center gap-4 mt-2 text-sm text-gray-500 flex-wrap">
+                            <div className="flex items-center gap-1">
+                              <MapPin className="h-4 w-4" />
+                              {job.location}
                             </div>
-                          )}
+                            <div className="flex items-center gap-1">
+                              {getStatusIcon(job.status)}
+                              <span className={clsx('px-2 py-0.5 rounded-full text-xs font-medium', getStatusBadge(job.status))}>
+                                {job.status}
+                              </span>
+                            </div>
+                            {job.easy_apply && (
+                              <div className="flex items-center gap-1 text-green-600">
+                                <Zap className="h-4 w-4" />
+                                Easy Apply
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className="text-sm text-gray-400 mr-2">{formatDate(job.discovered_at)}</span>
+                      <a
+                        href={job.job_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-2 text-gray-500 hover:text-linkedin-blue hover:bg-gray-100 rounded-lg transition-colors"
+                        title="View on LinkedIn"
+                      >
+                        <ExternalLink className="h-5 w-5" />
+                      </a>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-gray-400">{formatDate(job.discovered_at)}</span>
-                    <a
-                      href={job.job_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-2 text-gray-500 hover:text-linkedin-blue hover:bg-gray-100 rounded-lg transition-colors"
-                    >
-                      <ExternalLink className="h-5 w-5" />
-                    </a>
-                  </div>
+                  
+                  {/* Action Buttons for Easy Apply Jobs */}
+                  {job.easy_apply && !isApplied && (
+                    <div className="mt-4 pt-4 border-t border-gray-100 flex items-center gap-3 flex-wrap">
+                      <button
+                        onClick={() => handleTailor(job.id)}
+                        disabled={isTailoring || !selectedResumeId}
+                        className={clsx(
+                          "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                          hasTailored
+                            ? "bg-green-100 text-green-700 hover:bg-green-200"
+                            : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                        )}
+                      >
+                        {isTailoring ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Tailoring...
+                          </>
+                        ) : hasTailored ? (
+                          <>
+                            <CheckCircle className="h-4 w-4" />
+                            Tailored
+                          </>
+                        ) : (
+                          <>
+                            <FileText className="h-4 w-4" />
+                            Tailor Resume
+                          </>
+                        )}
+                      </button>
+                      
+                      <button
+                        onClick={() => setShowApplyModal(job.id)}
+                        disabled={isApplying || isQueued}
+                        className={clsx(
+                          "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                          isQueued
+                            ? "bg-yellow-100 text-yellow-700"
+                            : "btn-primary py-1.5"
+                        )}
+                      >
+                        {isApplying ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Applying...
+                          </>
+                        ) : isQueued ? (
+                          <>
+                            <Clock className="h-4 w-4" />
+                            Queued
+                          </>
+                        ) : (
+                          <>
+                            <Send className="h-4 w-4" />
+                            Apply
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
+                  
+                  {isApplied && (
+                    <div className="mt-4 pt-4 border-t border-gray-100">
+                      <span className="text-sm text-green-600 flex items-center gap-1">
+                        <CheckCircle className="h-4 w-4" />
+                        Application submitted
+                      </span>
+                    </div>
+                  )}
                 </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Apply Confirmation Modal */}
+        {showApplyModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+              <h3 className="text-lg font-semibold mb-4">Confirm Application</h3>
+              <p className="text-gray-600 mb-4">
+                Are you sure you want to apply to this job? This will use your {hasTailored ? 'tailored resume' : 'default resume'}.
+              </p>
+              <div className="flex gap-3 justify-end">
+                <button
+                  onClick={() => setShowApplyModal(null)}
+                  className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => handleApply(showApplyModal)}
+                  className="btn-primary"
+                >
+                  Apply Now
+                </button>
               </div>
-            ))}
+            </div>
           </div>
         )}
       </div>

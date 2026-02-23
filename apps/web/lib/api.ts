@@ -102,6 +102,36 @@ export const jobsApi = {
     const response = await api.get(`/jobs/search/status/${taskId}`);
     return response.data;
   },
+
+  apply: async (jobId: string, tailoredResumeId?: string) => {
+    const params = tailoredResumeId ? `?tailored_resume_id=${tailoredResumeId}` : '';
+    const response = await api.post(`/jobs/${jobId}/apply${params}`);
+    return response.data;
+  },
+
+  tailor: async (jobId: string, resumeId: string) => {
+    const response = await api.post(`/jobs/${jobId}/tailor`, { resume_id: resumeId });
+    return response.data;
+  },
+};
+
+// Applications API
+export const applicationsApi = {
+  list: async (status?: string) => {
+    const params = status ? `?status=${status}` : '';
+    const response = await api.get(`/jobs/applications${params}`);
+    return response.data;
+  },
+
+  get: async (applicationId: string) => {
+    const response = await api.get(`/jobs/applications/${applicationId}`);
+    return response.data;
+  },
+
+  getTaskStatus: async (taskId: string) => {
+    const response = await api.get(`/jobs/applications/task/${taskId}`);
+    return response.data;
+  },
 };
 
 export default api;

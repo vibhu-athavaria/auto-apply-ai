@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useDropzone } from 'react-dropzone';
 import DashboardLayout from '@/components/DashboardLayout';
 import { resumeApi } from '@/lib/api';
@@ -19,6 +19,10 @@ export default function ResumesPage() {
   const [resumes, setResumes] = useState<Resume[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    loadResumes();
+  }, []);
 
   const loadResumes = async () => {
     setIsLoading(true);

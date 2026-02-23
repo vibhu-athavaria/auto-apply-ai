@@ -141,8 +141,13 @@ export const linkedinApi = {
     return response.data;
   },
 
-  saveSession: async (liAtCookie: string) => {
-    const response = await api.post('/linkedin/session', { li_at_cookie: liAtCookie });
+  connect: async (email: string, password: string) => {
+    const response = await api.post('/linkedin/connect', { email, password });
+    return response.data;
+  },
+
+  getConnectStatus: async (taskId: string) => {
+    const response = await api.get(`/linkedin/connect/status/${taskId}`);
     return response.data;
   },
 

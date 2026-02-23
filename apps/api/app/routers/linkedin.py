@@ -18,7 +18,10 @@ from app.models.user import User
 from app.schemas.linkedin import (
     LinkedInSessionCreate,
     LinkedInSessionResponse,
-    LinkedInSessionStatus
+    LinkedInSessionStatus,
+    LinkedInConnectRequest,
+    LinkedInConnectResponse,
+    LinkedInAuthTaskStatus
 )
 from app.services.linkedin_session_service import LinkedInSessionService
 from app.utils.security import get_current_user
@@ -83,3 +86,64 @@ async def validate_session(
     service = LinkedInSessionService(db, redis_client)
     status = await service.validate_session(str(current_user.id))
     return status
+
+
+@router.post("/connect", response_model=LinkedInConnectResponse)
+async def connect_linkedin(
+    request: LinkedInConnectRequest,
+    current_user: User = Depends(get_current_user),
+    redis_client: aioredis.Redis = Depends(get_redis)
+):
+    """
+    Connect LinkedIn using email + password.
+
+    The password is used once to log in via Playwright and is NEVER stored.
+    Only the resulting session cookie (li_at) is encrypted and persisted.
+
+    Returns a task_id to poll for connection status.
+    """
+    import json
+    import uuid
+
+    task_id = str(uuid.uuid4())
+
+    task_data = {
+        "task_id": task_id,
+        "user_id": str(current_user.id),
+        "email": request.email,
+        "password": request.password,
+        "type": "linkedin_auth"
+    }
+
+    await redis_client.setex(
+        f"li_autopilot:api:auth_task:{task_id}",
+        300,
+        json.dumps({"task_id": task_id, "status": "connecting", "message": None})
+    )
+
+    await redis_client.rpush(
+        "li_autopilot:tasks:linkedin_auth",
+        json.dumps(task_data)
+    )
+
+    return LinkedInConnectResponse(task_id=task_id)
+
+
+@router.get("/connect/status/{task_id}", response_model=LinkedInAuthTaskStatus)
+async def get_connect_status(
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    redis_client: aioredis.Redis = Depends(get_redis)
+):
+    """
+    Poll the status of a LinkedIn connection task.
+
+    Statuses: connecting | connected | failed | challenge_required
+    """
+    import json
+
+    raw = await redis_client.get(f"li_autopilot:api:auth_task:{task_id}")
+    if not raw:
+        raise HTTPException(status_code=404, detail="Task not found or expired")
+
+    return json.loads(raw)

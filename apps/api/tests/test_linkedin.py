@@ -259,6 +259,136 @@ class TestLinkedInSessionService:
         assert status["connected"] is False
 
 
+class TestLinkedInConnectEndpoints:
+
+    @pytest.mark.asyncio
+    async def test_connect_enqueues_task(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        mock_redis: AsyncMock
+    ):
+        """POST /linkedin/connect enqueues auth task and returns task_id."""
+        response = await client.post(
+            "/linkedin/connect",
+            json={"email": "user@example.com", "password": "secret123"},
+            headers=auth_headers
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "task_id" in data
+        assert data["status"] == "connecting"
+
+        # Must enqueue to the auth queue
+        mock_redis.rpush.assert_called_once()
+        call_args = mock_redis.rpush.call_args[0]
+        assert call_args[0] == "li_autopilot:tasks:linkedin_auth"
+
+        # Password must NOT appear in the enqueued payload
+        import json as _json
+        payload = _json.loads(call_args[1])
+        assert payload["email"] == "user@example.com"
+        assert "secret123" not in str(data)  # not in response
+
+    @pytest.mark.asyncio
+    async def test_connect_requires_auth(self, client: AsyncClient):
+        """POST /linkedin/connect requires authentication."""
+        response = await client.post(
+            "/linkedin/connect",
+            json={"email": "user@example.com", "password": "secret"}
+        )
+        assert response.status_code in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_connect_invalid_email_rejected(
+        self,
+        client: AsyncClient,
+        auth_headers: dict
+    ):
+        """POST /linkedin/connect rejects invalid email."""
+        response = await client.post(
+            "/linkedin/connect",
+            json={"email": "not-an-email", "password": "secret"},
+            headers=auth_headers
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_connect_empty_password_rejected(
+        self,
+        client: AsyncClient,
+        auth_headers: dict
+    ):
+        """POST /linkedin/connect rejects empty password."""
+        response = await client.post(
+            "/linkedin/connect",
+            json={"email": "user@example.com", "password": ""},
+            headers=auth_headers
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_connect_status_connecting(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        mock_redis: AsyncMock
+    ):
+        """GET /linkedin/connect/status returns task status."""
+        import json as _json
+        mock_redis.get = AsyncMock(return_value=_json.dumps({
+            "task_id": "test-task-id",
+            "status": "connecting",
+            "message": None
+        }))
+
+        response = await client.get(
+            "/linkedin/connect/status/test-task-id",
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "connecting"
+
+    @pytest.mark.asyncio
+    async def test_connect_status_connected(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        mock_redis: AsyncMock
+    ):
+        """GET /linkedin/connect/status returns connected after auth."""
+        import json as _json
+        mock_redis.get = AsyncMock(return_value=_json.dumps({
+            "task_id": "test-task-id",
+            "status": "connected",
+            "message": "LinkedIn connected successfully"
+        }))
+
+        response = await client.get(
+            "/linkedin/connect/status/test-task-id",
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "connected"
+
+    @pytest.mark.asyncio
+    async def test_connect_status_not_found(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        mock_redis: AsyncMock
+    ):
+        """GET /linkedin/connect/status returns 404 for expired task."""
+        mock_redis.get = AsyncMock(return_value=None)
+
+        response = await client.get(
+            "/linkedin/connect/status/expired-task",
+            headers=auth_headers
+        )
+        assert response.status_code == 404
+
+
 class TestLinkedInEndpoints:
 
     @pytest.mark.asyncio

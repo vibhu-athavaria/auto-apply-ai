@@ -23,6 +23,7 @@ from config import settings
 from utils.logger import get_logger, setup_logging
 from tasks.job_search_task import JobSearchTask
 from tasks.application_task import ApplicationTask, ApplicationTaskError
+from tasks.linkedin_auth_task import LinkedInAuthTask
 from utils.rate_limiter import RateLimiter
 
 # Setup structured logging
@@ -38,6 +39,7 @@ class Worker:
 
     JOB_SEARCH_QUEUE = "li_autopilot:tasks:job_search"
     APPLICATION_QUEUE = "li_autopilot:worker:queue:applications"
+    AUTH_QUEUE = "li_autopilot:tasks:linkedin_auth"
     POLL_INTERVAL = 1
 
     def __init__(self):
@@ -125,7 +127,7 @@ class Worker:
             try:
                 # Block on both queues with timeout
                 result = await self.redis.brpop(
-                    [self.JOB_SEARCH_QUEUE, self.APPLICATION_QUEUE],
+                    [self.JOB_SEARCH_QUEUE, self.APPLICATION_QUEUE, self.AUTH_QUEUE],
                     timeout=self.POLL_INTERVAL
                 )
 
@@ -179,6 +181,8 @@ class Worker:
             async with self.db_session_factory() as session:
                 if queue == self.APPLICATION_QUEUE:
                     await self._handle_application_task(task_data, session)
+                elif queue == self.AUTH_QUEUE:
+                    await self._handle_linkedin_auth_task(task_data, session)
                 else:
                     await self._handle_job_search_task(task_data, session)
 
@@ -215,6 +219,10 @@ class Worker:
                 "task_id": task_id,
             }
         )
+
+    async def _handle_linkedin_auth_task(self, task_data: dict, session):
+        auth_task = LinkedInAuthTask(self.redis, session)
+        await auth_task.execute(task_data)
 
     async def _handle_application_task(self, task_data: dict, session):
         user_id = task_data.get("user_id")

@@ -134,4 +134,27 @@ export const applicationsApi = {
   },
 };
 
+// LinkedIn API
+export const linkedinApi = {
+  getStatus: async () => {
+    const response = await api.get('/linkedin/session');
+    return response.data;
+  },
+
+  saveSession: async (liAtCookie: string) => {
+    const response = await api.post('/linkedin/session', { li_at_cookie: liAtCookie });
+    return response.data;
+  },
+
+  validate: async () => {
+    const response = await api.post('/linkedin/session/validate');
+    return response.data;
+  },
+
+  deleteSession: async () => {
+    const response = await api.delete('/linkedin/session');
+    return response.data;
+  },
+};
+
 export default api;

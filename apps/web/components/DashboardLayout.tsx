@@ -12,7 +12,8 @@ import {
   LogOut,
   User,
   Menu,
-  X
+  X,
+  Link
 } from 'lucide-react';
 import { useState } from 'react';
 import clsx from 'clsx';
@@ -22,6 +23,7 @@ const navigation = [
   { name: 'Resumes', href: '/dashboard/resumes', icon: FileText },
   { name: 'Job Profiles', href: '/dashboard/profiles', icon: Search },
   { name: 'Jobs', href: '/dashboard/jobs', icon: Briefcase },
+  { name: 'LinkedIn', href: '/dashboard/linkedin', icon: Link },
 ];
 
 export default function DashboardLayout({

@@ -77,8 +77,10 @@ async def client(
     app.dependency_overrides[get_queue_service] = override_get_queue_service
     app.dependency_overrides[get_llm_service] = override_get_llm_service
 
-    from app.routers.applications import get_redis
-    app.dependency_overrides[get_redis] = override_get_redis
+    from app.routers.applications import get_redis as get_applications_redis
+    from app.routers.linkedin import get_redis as get_linkedin_redis
+    app.dependency_overrides[get_applications_redis] = override_get_redis
+    app.dependency_overrides[get_linkedin_redis] = override_get_redis
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

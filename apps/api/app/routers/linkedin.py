@@ -23,7 +23,7 @@ from app.schemas.linkedin import (
 from app.services.linkedin_session_service import LinkedInSessionService
 from app.utils.security import get_current_user
 
-router = APIRouter(prefix="/linkedin", tags=["linkedin"])
+router = APIRouter(tags=["linkedin"])
 
 
 async def get_redis():

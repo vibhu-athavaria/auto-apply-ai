@@ -16,6 +16,7 @@ from sqlalchemy.future import select
 
 from config import settings
 from automation.linkedin import LinkedInClient
+from utils.session_store import get_user_session
 from automation.easy_apply import (
     EasyApplyHandler,
     EasyApplyError,
@@ -187,11 +188,16 @@ class ApplicationTask:
         resume_path: Optional[str],
         session_cookie: Optional[str]
     ) -> dict:
-        """Apply to job with retry logic.
+        """Apply to job with retry logic using per-user session cookie."""
+        if not session_cookie:
+            session_cookie = await get_user_session(self.redis, user_id)
 
-        This method is decorated with retry_with_backoff for
-        transient failures.
-        """
+        if not session_cookie:
+            raise EasyApplyError(
+                f"No LinkedIn session found for user {user_id}. "
+                "User must connect their LinkedIn account first."
+            )
+
         async with LinkedInClient(session_cookie) as client:
             handler = EasyApplyHandler(client.page)
 

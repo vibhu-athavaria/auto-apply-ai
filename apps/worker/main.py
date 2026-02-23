@@ -22,6 +22,8 @@ from sqlalchemy.orm import sessionmaker
 from config import settings
 from utils.logger import get_logger, setup_logging
 from tasks.job_search_task import JobSearchTask
+from tasks.application_task import ApplicationTask, ApplicationTaskError
+from utils.rate_limiter import RateLimiter
 
 # Setup structured logging
 setup_logging()
@@ -34,10 +36,8 @@ class Worker:
     Listens for tasks from Redis queue and executes them.
     """
 
-    # Redis key for job search task queue
-    TASK_QUEUE_KEY = "li_autopilot:tasks:job_search"
-
-    # Polling interval in seconds
+    JOB_SEARCH_QUEUE = "li_autopilot:tasks:job_search"
+    APPLICATION_QUEUE = "li_autopilot:worker:queue:applications"
     POLL_INTERVAL = 1
 
     def __init__(self):
@@ -123,20 +123,18 @@ class Worker:
 
         while self.running:
             try:
-                # Blocking pop from queue with timeout
+                # Block on both queues with timeout
                 result = await self.redis.brpop(
-                    self.TASK_QUEUE_KEY,
+                    [self.JOB_SEARCH_QUEUE, self.APPLICATION_QUEUE],
                     timeout=self.POLL_INTERVAL
                 )
 
                 if result:
-                    _, task_json = result
+                    queue_key, task_json = result
                     task_data = json.loads(task_json)
+                    task_data["_queue"] = queue_key
 
-                    # Process task in background
-                    asyncio.create_task(
-                        self.handle_task(task_data)
-                    )
+                    asyncio.create_task(self.handle_task(task_data))
 
             except redis.ConnectionError as e:
                 logger.error(
@@ -161,17 +159,10 @@ class Worker:
                 await asyncio.sleep(1)
 
     async def handle_task(self, task_data: dict):
-        """Handle a single task.
-
-        Args:
-            task_data: Task data dictionary with:
-                - task_id: Unique task identifier
-                - user_id: User ID
-                - search_profile_id: Search profile ID
-        """
+        """Dispatch task to appropriate handler based on queue."""
+        queue = task_data.get("_queue", self.JOB_SEARCH_QUEUE)
         task_id = task_data.get("task_id")
         user_id = task_data.get("user_id")
-        search_profile_id = task_data.get("search_profile_id")
 
         logger.info(
             "Processing task",
@@ -180,29 +171,16 @@ class Worker:
                 "action": "handle_task",
                 "status": "started",
                 "task_id": task_id,
-                "search_profile_id": search_profile_id
+                "queue": queue
             }
         )
 
         try:
             async with self.db_session_factory() as session:
-                task_handler = JobSearchTask(self.redis, session)
-                result = await task_handler.execute(
-                    task_id=task_id,
-                    user_id=user_id,
-                    search_profile_id=search_profile_id
-                )
-
-                logger.info(
-                    "Task completed",
-                    extra={
-                        "user_id": user_id,
-                        "action": "handle_task",
-                        "status": result.get("status"),
-                        "task_id": task_id,
-                        "result": result
-                    }
-                )
+                if queue == self.APPLICATION_QUEUE:
+                    await self._handle_application_task(task_data, session)
+                else:
+                    await self._handle_job_search_task(task_data, session)
 
         except Exception as e:
             logger.error(
@@ -215,6 +193,71 @@ class Worker:
                     "error": str(e)
                 }
             )
+
+    async def _handle_job_search_task(self, task_data: dict, session):
+        task_id = task_data.get("task_id")
+        user_id = task_data.get("user_id")
+        search_profile_id = task_data.get("search_profile_id")
+
+        task_handler = JobSearchTask(self.redis, session)
+        result = await task_handler.execute(
+            task_id=task_id,
+            user_id=user_id,
+            search_profile_id=search_profile_id
+        )
+
+        logger.info(
+            "Job search task completed",
+            extra={
+                "user_id": user_id,
+                "action": "handle_job_search_task",
+                "status": result.get("status"),
+                "task_id": task_id,
+            }
+        )
+
+    async def _handle_application_task(self, task_data: dict, session):
+        user_id = task_data.get("user_id")
+        job_id = task_data.get("job_id")
+        job_url = task_data.get("job_url")
+        resume_path = task_data.get("resume_path")
+        task_id = task_data.get("task_id")
+
+        rate_limiter = RateLimiter(self.redis)
+        app_task = ApplicationTask(session, self.redis, rate_limiter)
+
+        try:
+            result = await app_task.process_application(
+                user_id=user_id,
+                job_id=job_id,
+                job_url=job_url,
+                resume_path=resume_path
+            )
+
+            logger.info(
+                "Application task completed",
+                extra={
+                    "user_id": user_id,
+                    "action": "handle_application_task",
+                    "status": "success",
+                    "task_id": task_id,
+                    "job_id": job_id,
+                }
+            )
+
+        except ApplicationTaskError as e:
+            logger.error(
+                f"Application task failed: {e}",
+                extra={
+                    "user_id": user_id,
+                    "action": "handle_application_task",
+                    "status": "failed",
+                    "task_id": task_id,
+                    "job_id": job_id,
+                    "error": str(e)
+                }
+            )
+            await app_task.update_task_status(task_id, "failed", error=str(e))
 
 
 async def main():

@@ -25,6 +25,7 @@ from models.job_search_profile import JobSearchProfile
 from utils.logger import get_logger
 from utils.rate_limiter import RateLimiter
 from utils.delays import search_delay
+from utils.session_store import get_user_session
 
 logger = get_logger(__name__)
 
@@ -126,10 +127,11 @@ class JobSearchTask:
                     "message": "Access denied"
                 }
 
-            # Execute LinkedIn search
+            # Execute LinkedIn search using user's session
             jobs = await self._search_linkedin(
                 keywords=profile.keywords,
-                location=profile.location
+                location=profile.location,
+                user_id=user_id
             )
 
             # Store jobs in database
@@ -214,25 +216,36 @@ class JobSearchTask:
     async def _search_linkedin(
         self,
         keywords: str,
-        location: str
+        location: str,
+        user_id: str
     ) -> list:
-        """Execute LinkedIn job search.
+        """Execute LinkedIn job search using user's session cookie.
 
         Args:
             keywords: Search keywords
             location: Job location
+            user_id: User ID to fetch session cookie for
 
         Returns:
             List of job dictionaries
         """
-        async with LinkedInClient() as client:
-            # Navigate to jobs page
+        session_cookie = await get_user_session(self.redis, user_id)
+
+        if not session_cookie:
+            raise Exception(
+                f"No LinkedIn session found for user {user_id}. "
+                "User must connect their LinkedIn account first."
+            )
+
+        async with LinkedInClient(session_cookie=session_cookie) as client:
             if not await client.navigate_to_jobs():
-                raise Exception("Failed to authenticate with LinkedIn")
+                raise Exception(
+                    "LinkedIn authentication failed. "
+                    "Session cookie may be expired."
+                )
 
             await search_delay()
 
-            # Search for jobs
             jobs = await client.search_jobs(
                 keywords=keywords,
                 location=location,

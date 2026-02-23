@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sess
 from app.main import app
 from app.database import Base, get_db
 from app.models.user import User
+from app.models.resume import Resume
 from app.utils.security import get_password_hash, create_access_token
 from app.services.queue_service import get_queue_service
 from app.services.llm_service import get_llm_service
@@ -69,9 +70,15 @@ async def client(
         llm_service = LLMService(mock_redis)
         yield llm_service
 
+    async def override_get_redis():
+        yield mock_redis
+
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_queue_service] = override_get_queue_service
     app.dependency_overrides[get_llm_service] = override_get_llm_service
+
+    from app.routers.applications import get_redis
+    app.dependency_overrides[get_redis] = override_get_redis
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -98,3 +105,19 @@ async def auth_headers(test_user: User) -> dict:
     """Generate authorization headers for the test user."""
     token = create_access_token(data={"sub": test_user.email})
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture(scope="function")
+async def test_resume(db_session: AsyncSession, test_user: User) -> Resume:
+    """Create a test resume for resume-related tests."""
+    resume = Resume(
+        user_id=test_user.id,
+        filename="test_resume.txt",
+        file_path="/tmp/test_resume.txt",
+        file_size=1024,
+        content_type="text/plain"
+    )
+    db_session.add(resume)
+    await db_session.commit()
+    await db_session.refresh(resume)
+    return resume

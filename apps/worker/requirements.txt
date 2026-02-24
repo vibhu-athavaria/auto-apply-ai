@@ -16,3 +16,6 @@ pydantic-settings>=2.0.0
 
 # Async support
 asyncio>=3.4.3
+
+# Encryption for session cookies
+cryptography>=41.0.0

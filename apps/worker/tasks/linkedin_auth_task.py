@@ -5,10 +5,13 @@ Runs Playwright login, extracts li_at, stores it.
 The password is used once and NEVER stored.
 """
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+import base64
+from cryptography.fernet import Fernet
 
 from automation.linkedin_auth import (
     LinkedInAuthenticator,
@@ -16,13 +19,15 @@ from automation.linkedin_auth import (
     LinkedInChallengeRequired,
     LinkedInInvalidCredentials,
 )
+from models.linkedin_session import LinkedInSession
+from config import settings
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 AUTH_TASK_KEY_PREFIX = "li_autopilot:api:auth_task"
 WORKER_SESSION_KEY_PREFIX = "li_autopilot:worker:session"
-WORKER_SESSION_TTL = 86400  # 24h
+WORKER_SESSION_TTL = 86400
 
 
 class LinkedInAuthTask:
@@ -65,12 +70,14 @@ class LinkedInAuthTask:
         )
 
         try:
+            await self._update_task(task_id, "connecting", "Connecting to LinkedIn...")
+            
             authenticator = LinkedInAuthenticator()
             li_at = await authenticator.login(email=email, password=password)
 
-            # password is now out of scope — only li_at persists
-
+            await self._update_task(task_id, "saving", "Saving your session...")
             await self._store_session(user_id, li_at)
+            
             await self._update_task(task_id, "connected", "LinkedIn connected successfully")
 
             logger.info(
@@ -105,7 +112,7 @@ class LinkedInAuthTask:
                     "task_id": task_id,
                 }
             )
-            await self._update_task(task_id, "failed", str(e))
+            await self._update_task(task_id, "failed", "Invalid email or password")
 
         except LinkedInAuthError as e:
             logger.error(
@@ -118,7 +125,7 @@ class LinkedInAuthTask:
                     "error": str(e),
                 }
             )
-            await self._update_task(task_id, "failed", str(e))
+            await self._update_task(task_id, "failed", "Could not connect to LinkedIn")
 
         except Exception as e:
             logger.error(
@@ -131,7 +138,7 @@ class LinkedInAuthTask:
                     "error": str(e),
                 }
             )
-            await self._update_task(task_id, "failed", "An unexpected error occurred")
+            await self._update_task(task_id, "failed", f"Error: {str(e)}")
 
     async def _store_session(self, user_id: str, li_at: str) -> None:
         """Store the session cookie in Redis (for worker) and DB (encrypted).
@@ -140,17 +147,8 @@ class LinkedInAuthTask:
             user_id: User ID
             li_at: Plaintext li_at cookie (only cookie, not password)
         """
-        # Write plaintext to Redis for automation tasks
         worker_key = f"{WORKER_SESSION_KEY_PREFIX}:{user_id}"
         await self.redis.setex(worker_key, WORKER_SESSION_TTL, li_at)
-
-        # Write encrypted to DB via internal API call through DB session
-        # We import here to avoid circular deps — worker talks to DB directly
-        from models.linkedin_session import LinkedInSession
-        from sqlalchemy.future import select
-        import base64
-        from cryptography.fernet import Fernet
-        from config import settings
 
         raw_key = settings.secret_key.encode()[:32]
         padded = raw_key.ljust(32, b'0')[:32]
@@ -162,7 +160,6 @@ class LinkedInAuthTask:
         )
         session = result.scalars().first()
 
-        from datetime import timedelta
         now = datetime.utcnow()
         expires = now + timedelta(days=30)
 

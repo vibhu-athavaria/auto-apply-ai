@@ -490,7 +490,7 @@ function JobsContent() {
             <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
               <h3 className="text-lg font-semibold mb-4">Confirm Application</h3>
               <p className="text-gray-600 mb-4">
-                Are you sure you want to apply to this job? This will use your {hasTailored ? 'tailored resume' : 'default resume'}.
+                Are you sure you want to apply to this job? This will use your {tailoredResumes[showApplyModal] ? 'tailored resume' : 'default resume'}.
               </p>
               <div className="flex gap-3 justify-end">
                 <button

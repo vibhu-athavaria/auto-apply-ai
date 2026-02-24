@@ -22,10 +22,11 @@ The user should be able to:
 1. Register and log in
 2. Upload their resume
 3. Define job search preferences (keywords, location)
-4. See LinkedIn job listings
-5. Generate AI-tailored resume + cover letter
-6. Apply via Easy Apply
-7. Track application status
+4. Connect their LinkedIn account (email + password)
+5. See LinkedIn job listings
+6. Generate AI-tailored resume + cover letter
+7. Apply via Easy Apply
+8. Track application status
 
 We are building LinkedIn-only in Phase 1.
 
@@ -45,9 +46,33 @@ We are building LinkedIn-only in Phase 1.
   - Cost tracking
   - Queue job creation
 
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/auth/register` | POST | Register new user |
+| `/auth/login` | POST | Login and get JWT token |
+| `/resumes` | GET, POST | List and upload resumes |
+| `/resumes/{id}` | GET, DELETE | Get or delete specific resume |
+| `/profiles` | GET, POST | Job search profiles |
+| `/profiles/{id}` | GET, PUT, DELETE | Manage search profile |
+| `/jobs` | GET | List jobs for a search profile |
+| `/jobs/search` | POST | Trigger job search |
+| `/jobs/{id}/tailor` | POST | Generate tailored resume |
+| `/jobs/{id}/tailored` | GET | Get tailored resume |
+| `/jobs/{id}/apply` | POST | Apply via Easy Apply |
+| `/linkedin/connect` | POST | Connect LinkedIn (email + password) |
+| `/linkedin/connect/status/{task_id}` | GET | Poll connection status |
+| `/linkedin/session` | GET | Get session status |
+| `/linkedin/session/validate` | POST | Validate LinkedIn session |
+| `/applications` | GET | List applications |
+| `/applications/task/{task_id}` | GET | Check application task status |
+| `/users/me/costs` | GET | Get LLM cost summary |
+
 ## Worker Service
 - Python-based background worker
 - Responsibilities:
+  - LinkedIn authentication (Playwright)
   - LinkedIn job search automation
   - Easy Apply automation
   - Resume tailoring (LLM calls)
@@ -55,6 +80,14 @@ We are building LinkedIn-only in Phase 1.
   - Cost logging
   - Caching checks
 - Must run independently from API
+
+### Worker Task Queues
+
+| Queue | Purpose |
+|-------|---------|
+| `li_autopilot:tasks:linkedin_auth` | LinkedIn login via email + password |
+| `li_autopilot:tasks:job_search` | Job search automation |
+| `li_autopilot:worker:queue:applications` | Easy Apply automation |
 
 ## Browser Automation
 - Playwright
@@ -71,8 +104,9 @@ Core Tables:
 - job_search_profiles
 - jobs
 - applications
+- tailored_resumes
+- linkedin_sessions
 - llm_usage_logs
-- cost_tracking
 
 ## Cache Layer
 Redis
@@ -83,6 +117,34 @@ Used for:
 - Deduplication keys
 - Rate limiting
 - Background queue
+- Task status tracking
+
+### Redis Key Format
+
+All keys follow: `li_autopilot:{service}:{entity}:{identifier}`
+
+| Key Pattern | TTL | Purpose |
+|-------------|-----|---------|
+| `li_autopilot:api:auth_task:{task_id}` | 5min | Auth task status |
+| `li_autopilot:worker:session:{user_id}` | 24h | LinkedIn session for worker |
+| `li_autopilot:cache:llm:{hash}` | 7 days | LLM response cache |
+
+## Frontend
+- Framework: Next.js 14
+- Language: TypeScript
+- Styling: Tailwind CSS
+
+### Pages
+
+| Route | Description |
+|-------|-------------|
+| `/login` | Login page |
+| `/register` | Registration page |
+| `/dashboard` | Dashboard overview |
+| `/dashboard/resumes` | Resume management |
+| `/dashboard/profiles` | Job search profiles |
+| `/dashboard/jobs` | Job listings and actions |
+| `/dashboard/linkedin` | LinkedIn connection |
 
 ---
 
@@ -106,110 +168,112 @@ Cost and stability take priority over speed of feature release.
 
 ---
 
-## PHASE 1 – Core Backend Foundation
+## PHASE 1 – Core Backend Foundation ✅ COMPLETE
 
 Goal: User system + resume upload.
 
-Tasks:
+### Completed Tasks:
 
-1. Initialize FastAPI project structure
-2. Setup Docker:
+1. ✅ Initialize FastAPI project structure
+2. ✅ Setup Docker:
    - Postgres
    - Redis
-3. Implement User model
-4. Implement JWT authentication
-5. Resume upload endpoint
-6. Store resume file locally (MVP)
-7. Create JobSearchProfile model
-8. Add health check endpoint
-9. Implement structured logging
-10. Prepare cost logging middleware (empty for now)
+3. ✅ Implement User model
+4. ✅ Implement JWT authentication
+5. ✅ Resume upload endpoint
+6. ✅ Store resume file locally (MVP)
+7. ✅ Create JobSearchProfile model
+8. ✅ Add health check endpoint
+9. ✅ Implement structured logging
+10. ✅ Prepare cost logging middleware
 
-Deliverable:
+### Deliverable:
 User can register, login, upload resume.
-
-No LinkedIn integration yet.
 
 ---
 
-## PHASE 2 – Job Search Engine (Read-Only)
+## PHASE 2 – Job Search Engine ✅ COMPLETE
 
 Goal: Fetch and store LinkedIn job listings.
 
-Tasks:
+### Completed Tasks:
 
-1. Create Worker service
-2. Integrate Playwright
-3. Implement LinkedIn login using session cookie
-4. Automate job search:
+1. ✅ Create Worker service
+2. ✅ Integrate Playwright
+3. ✅ Implement LinkedIn login:
+   - Session cookie method
+   - Email + password method (Playwright automation)
+4. ✅ Automate job search:
    - Keyword
    - Location
-5. Parse job listings:
+5. ✅ Parse job listings:
    - Title
    - Company
    - URL
    - Easy Apply flag
-6. Store jobs in DB
-7. Implement Redis caching:
+6. ✅ Store jobs in DB
+7. ✅ Implement Redis caching:
    - Cache search results (24h TTL)
-8. Deduplicate jobs by LinkedIn job ID
-9. Create API endpoint:
-   GET /jobs?search_profile_id=
+8. ✅ Deduplicate jobs by LinkedIn job ID
+9. ✅ Create API endpoint:
+   - GET /jobs?search_profile_id=
+10. ✅ Implement per-user LinkedIn session management
 
-Deliverable:
-User can search and see LinkedIn jobs in dashboard.
-
-No applying yet.
+### Deliverable:
+User can connect LinkedIn, search and see jobs in dashboard.
 
 ---
 
-## PHASE 3 – Resume Tailoring Engine
+## PHASE 3 – Resume Tailoring Engine ✅ COMPLETE
 
 Goal: AI-generated tailored resume + cover letter.
 
-Tasks:
+### Completed Tasks:
 
-1. Integrate LLM provider
-2. Build ResumeTailorService
-3. Create deterministic input hash:
-   hash(resume + job_description)
-4. Check Redis cache before LLM call
-5. Store tailored output in DB
-6. Log:
+1. ✅ Integrate LLM provider (OpenAI)
+2. ✅ Build ResumeTailorService
+3. ✅ Create deterministic input hash:
+   - hash(resume + job_description)
+4. ✅ Check Redis cache before LLM call
+5. ✅ Store tailored output in DB
+6. ✅ Log:
    - Prompt tokens
    - Completion tokens
    - Cost
    - User ID
-7. Track cumulative cost per user
-8. Add endpoint:
-   POST /jobs/{id}/tailor
+7. ✅ Track cumulative cost per user
+8. ✅ Add endpoints:
+   - POST /jobs/{id}/tailor
+   - GET /jobs/{id}/tailored
+   - GET /users/me/costs
 
-Deliverable:
+### Deliverable:
 User can generate tailored resume and cover letter.
 
-Caching must be enforced before every LLM call.
+Caching is enforced before every LLM call.
 
 ---
 
-## PHASE 4 – Easy Apply Automation
+## PHASE 4 – Easy Apply Automation ✅ COMPLETE
 
 Goal: Apply to jobs via Easy Apply.
 
-Tasks:
+### Completed Tasks:
 
-1. Implement Easy Apply handler in Worker
-2. Detect multi-step forms
-3. Fill:
+1. ✅ Implement Easy Apply handler in Worker
+2. ✅ Detect multi-step forms
+3. ✅ Fill:
    - Resume
    - Basic information
-4. Add per-user rate limiting
-5. Add daily application cap
-6. Update application status in DB
-7. Add retry mechanism with exponential backoff
-8. Add randomized human-like delays
-9. Log success/failure reason
+4. ✅ Add per-user rate limiting
+5. ✅ Add daily application cap
+6. ✅ Update application status in DB
+7. ✅ Add retry mechanism with exponential backoff
+8. ✅ Add randomized human-like delays
+9. ✅ Log success/failure reason
+10. ✅ Application queue with status tracking
 
-Deliverable:
+### Deliverable:
 System applies to Easy Apply jobs safely.
 
 ---
@@ -218,7 +282,7 @@ System applies to Easy Apply jobs safely.
 
 Goal: Ensure profitability and system protection.
 
-Tasks:
+### Tasks:
 
 1. Add per-user daily limits:
    - Searches
@@ -233,7 +297,7 @@ Tasks:
    - Stop automation if failure rate spikes
 5. Add system-wide rate throttle
 
-Deliverable:
+### Deliverable:
 System becomes cost-aware and stable under load.
 
 ---
@@ -251,4 +315,64 @@ From Day 1:
 - Log infra-heavy operations
 
 Goal:
-Revenue per user must always exceed
+Revenue per user must always exceed infrastructure + LLM costs.
+
+---
+
+# 6. Security Considerations
+
+## LinkedIn Credentials
+- Passwords are NEVER stored
+- Passwords are used once during Playwright login, then discarded
+- Only the resulting `li_at` session cookie is persisted (encrypted)
+
+## Session Cookie Storage
+- Encrypted in PostgreSQL using Fernet (AES-128)
+- Plaintext in Redis for worker (24h TTL)
+- Per-user session isolation
+
+## API Security
+- JWT tokens with expiration
+- All endpoints require authentication
+- Input validation via Pydantic
+- File upload validation (type + size)
+
+---
+
+# 7. Error Handling Philosophy
+
+Per AGENTS.md:
+
+- Fail fast, fail loudly
+- No silent error swallowing
+- User-friendly messages for frontend
+- Detailed structured logs for debugging
+
+### Task Status Messages
+
+User-facing progress messages:
+
+**LinkedIn Connection:**
+- "Connecting to LinkedIn..."
+- "Saving your session..."
+- "LinkedIn connected successfully"
+- "Invalid email or password"
+- "Could not connect to LinkedIn"
+
+**Job Search (Async):**
+- "Connecting to LinkedIn..."
+- "Searching for '{keywords}' jobs in {location}..."
+- "Found X jobs, saving to your dashboard..."
+- "Found X jobs, Y new"
+
+### Async Flow
+
+All automation tasks are processed asynchronously:
+
+1. **User triggers action** → API creates task in Redis queue
+2. **API returns task_id immediately** → User sees progress indicator
+3. **Worker picks up task** → Processes in background
+4. **Frontend polls status** → Shows progress messages
+5. **Task completes** → User sees result
+
+This ensures the API never blocks and users get real-time feedback.

@@ -3,8 +3,8 @@
 import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import DashboardLayout from '@/components/DashboardLayout';
-import { jobsApi, profileApi, resumeApi } from '@/lib/api';
-import { Briefcase, MapPin, ExternalLink, RefreshCw, CheckCircle, Clock, XCircle, Zap, Send, FileText, Loader2 } from 'lucide-react';
+import { jobsApi, profileApi, resumeApi, linkedinApi } from '@/lib/api';
+import { Briefcase, MapPin, ExternalLink, RefreshCw, CheckCircle, Clock, XCircle, Zap, Send, FileText, Loader2, Search } from 'lucide-react';
 import toast from 'react-hot-toast';
 import clsx from 'clsx';
 
@@ -26,6 +26,11 @@ interface JobSearchProfile {
   location: string;
 }
 
+interface LinkedInStatus {
+  connected: boolean;
+  status: string;
+}
+
 interface Resume {
   id: string;
   filename: string;
@@ -44,6 +49,7 @@ function JobsContent() {
 
   const [profiles, setProfiles] = useState<JobSearchProfile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string>(profileIdFromUrl || '');
+  const [selectedProfile, setSelectedProfile] = useState<JobSearchProfile | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
@@ -58,17 +64,23 @@ function JobsContent() {
   const [selectedResumeId, setSelectedResumeId] = useState<string>('');
   const [showApplyModal, setShowApplyModal] = useState<string | null>(null);
   const [applicationTasks, setApplicationTasks] = useState<Record<string, string>>({});
+  const [linkedinStatus, setLinkedinStatus] = useState<LinkedInStatus>({ connected: false, status: 'not_set' });
+  const [searchMessage, setSearchMessage] = useState<string>('');
+  const [jobsFound, setJobsFound] = useState<number>(0);
 
   useEffect(() => {
     loadProfiles();
     loadResumes();
+    checkLinkedInStatus();
   }, []);
 
   useEffect(() => {
     if (selectedProfileId) {
+      const profile = profiles.find(p => p.id === selectedProfileId);
+      setSelectedProfile(profile || null);
       loadJobs();
     }
-  }, [selectedProfileId, statusFilter]);
+  }, [selectedProfileId, statusFilter, profiles]);
 
   useEffect(() => {
     if (profileIdFromUrl) {
@@ -77,22 +89,41 @@ function JobsContent() {
   }, [profileIdFromUrl]);
 
   useEffect(() => {
-    if (taskId && taskStatus === 'running') {
+    if (taskId && (taskStatus === 'running' || taskStatus === 'queued')) {
       const interval = setInterval(async () => {
         try {
           const status = await jobsApi.getSearchStatus(taskId);
           setTaskStatus(status.status);
+          
+          if (status.message) {
+            setSearchMessage(status.message);
+          }
+          
+          if (status.jobs_found !== undefined) {
+            setJobsFound(status.jobs_found);
+          }
+          
+          if (status.status === 'running') {
+            loadJobs();
+          }
+          
           if (status.status === 'completed' || status.status === 'failed') {
             clearInterval(interval);
+            setIsSearching(false);
             if (status.status === 'completed') {
               toast.success(`Found ${status.jobs_found} jobs!`);
               loadJobs();
             } else {
-              toast.error('Job search failed');
+              toast.error(status.message || 'Job search failed');
             }
+            setSearchMessage('');
+            setTaskId(null);
+            setTaskStatus(null);
           }
         } catch (error) {
           clearInterval(interval);
+          setIsSearching(false);
+          setSearchMessage('');
         }
       }, 2000);
       return () => clearInterval(interval);
@@ -120,7 +151,6 @@ function JobsContent() {
               }
             }
           } catch (error) {
-            // Ignore errors
           }
         }
       }, 3000);
@@ -152,6 +182,19 @@ function JobsContent() {
     }
   };
 
+  const checkLinkedInStatus = async () => {
+    try {
+      const data = await linkedinApi.getStatus();
+      setLinkedinStatus({
+        connected: data.connected === true || data.status === 'connected',
+        status: data.status,
+      });
+    } catch (error) {
+      console.error('Failed to check LinkedIn status:', error);
+      setLinkedinStatus({ connected: false, status: 'not_set' });
+    }
+  };
+
   const loadJobs = async () => {
     if (!selectedProfileId) return;
     setIsLoading(true);
@@ -171,17 +214,23 @@ function JobsContent() {
       return;
     }
 
+    if (!linkedinStatus?.connected) {
+      toast.error('Please connect your LinkedIn account first');
+      return;
+    }
+
     setIsSearching(true);
+    setJobsFound(0);
+    setSearchMessage('Initializing job search...');
     try {
       const result = await jobsApi.triggerSearch(selectedProfileId);
       setTaskId(result.task_id);
       setTaskStatus(result.status);
-      toast.success('Job search started!');
     } catch (error: any) {
       const message = error.response?.data?.detail || 'Failed to start job search';
       toast.error(message);
-    } finally {
       setIsSearching(false);
+      setSearchMessage('');
     }
   };
 
@@ -268,35 +317,74 @@ function JobsContent() {
     });
   };
 
+  const isSearchInProgress = isSearching || taskStatus === 'running' || taskStatus === 'queued';
+
   return (
     <DashboardLayout>
       <div className="page-container">
-        {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Jobs</h1>
             <p className="text-gray-600">Discover and track job opportunities</p>
           </div>
-          <button
-            onClick={handleSearch}
-            disabled={isSearching || taskStatus === 'running'}
-            className="btn-primary flex items-center gap-2"
-          >
-            {isSearching || taskStatus === 'running' ? (
-              <>
-                <RefreshCw className="h-5 w-5 animate-spin" />
-                Searching...
-              </>
+          <div className="flex items-center gap-3">
+            {linkedinStatus.connected ? (
+              <span className="text-sm text-green-600 flex items-center gap-1">
+                <CheckCircle className="h-4 w-4" />
+                LinkedIn Connected
+              </span>
             ) : (
-              <>
-                <RefreshCw className="h-5 w-5" />
-                Search Jobs
-              </>
+              <a href="/dashboard/linkedin" className="text-sm text-blue-600 hover:underline">
+                Connect LinkedIn first
+              </a>
             )}
-          </button>
+            <button
+              onClick={handleSearch}
+              disabled={isSearchInProgress || !linkedinStatus?.connected}
+              className="btn-primary flex items-center gap-2"
+            >
+              {isSearchInProgress ? (
+                <>
+                  <RefreshCw className="h-5 w-5 animate-spin" />
+                  Searching...
+                </>
+              ) : (
+                <>
+                  <Search className="h-5 w-5" />
+                  Search Jobs
+                </>
+              )}
+            </button>
+          </div>
         </div>
 
-        {/* Filters */}
+        {isSearchInProgress && (
+          <div className="card mb-6 bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-200">
+            <div className="flex items-start gap-4">
+              <div className="flex-shrink-0">
+                <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
+                  <RefreshCw className="h-6 w-6 text-blue-600 animate-spin" />
+                </div>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-blue-900 mb-1">
+                  Searching LinkedIn for Jobs
+                </h3>
+                <p className="text-blue-700 mb-3">{searchMessage}</p>
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-blue-600">Jobs found:</span>
+                    <span className="text-lg font-bold text-blue-700">{jobsFound}</span>
+                  </div>
+                  <div className="flex-1 h-2 bg-blue-200 rounded-full overflow-hidden">
+                    <div className="h-full bg-blue-600 rounded-full animate-pulse" style={{ width: '60%' }}></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="card mb-6">
           <div className="flex flex-col sm:flex-row gap-4">
             <div className="flex-1">
@@ -307,6 +395,7 @@ function JobsContent() {
                 value={selectedProfileId}
                 onChange={(e) => setSelectedProfileId(e.target.value)}
                 className="input-field"
+                disabled={isSearchInProgress}
               >
                 <option value="">Select a profile...</option>
                 {profiles.map((profile) => (
@@ -335,7 +424,6 @@ function JobsContent() {
           </div>
         </div>
 
-        {/* Jobs List */}
         {isLoading ? (
           <div className="flex items-center justify-center py-12">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-linkedin-blue"></div>
@@ -349,142 +437,158 @@ function JobsContent() {
           <div className="card text-center py-12">
             <Briefcase className="h-12 w-12 text-gray-300 mx-auto mb-4" />
             <p className="text-gray-500 mb-2">No jobs found</p>
-            <p className="text-sm text-gray-400 mb-4">Start a search to discover jobs</p>
-            <button onClick={handleSearch} className="btn-primary">
-              Search Jobs
-            </button>
+            <p className="text-sm text-gray-400 mb-4">
+              {isSearchInProgress 
+                ? 'Jobs will appear here as they are discovered...'
+                : 'Click "Search Jobs" to discover opportunities'}
+            </p>
+            {!isSearchInProgress && (
+              <button 
+                onClick={handleSearch} 
+                disabled={!linkedinStatus?.connected}
+                className="btn-primary disabled:opacity-50"
+              >
+                Search Jobs
+              </button>
+            )}
           </div>
         ) : (
-          <div className="space-y-4">
-            {jobs.map((job) => {
-              const isApplying = applyingJobs.has(job.id);
-              const isTailoring = tailoringJobs.has(job.id);
-              const hasTailored = !!tailoredResumes[job.id];
-              const isApplied = job.status === 'applied';
-              const isQueued = !!applicationTasks[job.id];
+          <>
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-sm text-gray-600">
+                {jobs.length} job{jobs.length !== 1 ? 's' : ''} found
+                {isSearchInProgress && ' (searching...)'}
+              </span>
+            </div>
+            <div className="space-y-4">
+              {jobs.map((job) => {
+                const isApplying = applyingJobs.has(job.id);
+                const isTailoring = tailoringJobs.has(job.id);
+                const hasTailored = !!tailoredResumes[job.id];
+                const isApplied = job.status === 'applied';
+                const isQueued = !!applicationTasks[job.id];
 
-              return (
-                <div key={job.id} className="card hover:shadow-md transition-shadow">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-start gap-3">
-                        <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                          <Briefcase className="h-5 w-5 text-linkedin-blue" />
-                        </div>
-                        <div className="flex-1">
-                          <h3 className="font-semibold text-gray-900">{job.title}</h3>
-                          <p className="text-gray-600">{job.company}</p>
-                          <div className="flex items-center gap-4 mt-2 text-sm text-gray-500 flex-wrap">
-                            <div className="flex items-center gap-1">
-                              <MapPin className="h-4 w-4" />
-                              {job.location}
-                            </div>
-                            <div className="flex items-center gap-1">
-                              {getStatusIcon(job.status)}
-                              <span className={clsx('px-2 py-0.5 rounded-full text-xs font-medium', getStatusBadge(job.status))}>
-                                {job.status}
-                              </span>
-                            </div>
-                            {job.easy_apply && (
-                              <div className="flex items-center gap-1 text-green-600">
-                                <Zap className="h-4 w-4" />
-                                Easy Apply
+                return (
+                  <div key={job.id} className="card hover:shadow-md transition-shadow">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-start gap-3">
+                          <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                            <Briefcase className="h-5 w-5 text-linkedin-blue" />
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="font-semibold text-gray-900">{job.title}</h3>
+                            <p className="text-gray-600">{job.company}</p>
+                            <div className="flex items-center gap-4 mt-2 text-sm text-gray-500 flex-wrap">
+                              <div className="flex items-center gap-1">
+                                <MapPin className="h-4 w-4" />
+                                {job.location}
                               </div>
-                            )}
+                              <div className="flex items-center gap-1">
+                                {getStatusIcon(job.status)}
+                                <span className={clsx('px-2 py-0.5 rounded-full text-xs font-medium', getStatusBadge(job.status))}>
+                                  {job.status}
+                                </span>
+                              </div>
+                              {job.easy_apply && (
+                                <div className="flex items-center gap-1 text-green-600">
+                                  <Zap className="h-4 w-4" />
+                                  Easy Apply
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-sm text-gray-400 mr-2">{formatDate(job.discovered_at)}</span>
+                        <a
+                          href={job.job_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-2 text-gray-500 hover:text-linkedin-blue hover:bg-gray-100 rounded-lg transition-colors"
+                          title="View on LinkedIn"
+                        >
+                          <ExternalLink className="h-5 w-5" />
+                        </a>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <span className="text-sm text-gray-400 mr-2">{formatDate(job.discovered_at)}</span>
-                      <a
-                        href={job.job_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="p-2 text-gray-500 hover:text-linkedin-blue hover:bg-gray-100 rounded-lg transition-colors"
-                        title="View on LinkedIn"
-                      >
-                        <ExternalLink className="h-5 w-5" />
-                      </a>
-                    </div>
+                    
+                    {job.easy_apply && !isApplied && (
+                      <div className="mt-4 pt-4 border-t border-gray-100 flex items-center gap-3 flex-wrap">
+                        <button
+                          onClick={() => handleTailor(job.id)}
+                          disabled={isTailoring || !selectedResumeId}
+                          className={clsx(
+                            "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                            hasTailored
+                              ? "bg-green-100 text-green-700 hover:bg-green-200"
+                              : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                          )}
+                        >
+                          {isTailoring ? (
+                            <>
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              Tailoring...
+                            </>
+                          ) : hasTailored ? (
+                            <>
+                              <CheckCircle className="h-4 w-4" />
+                              Tailored
+                            </>
+                          ) : (
+                            <>
+                              <FileText className="h-4 w-4" />
+                              Tailor Resume
+                            </>
+                          )}
+                        </button>
+                        
+                        <button
+                          onClick={() => setShowApplyModal(job.id)}
+                          disabled={isApplying || isQueued}
+                          className={clsx(
+                            "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                            isQueued
+                              ? "bg-yellow-100 text-yellow-700"
+                              : "btn-primary py-1.5"
+                          )}
+                        >
+                          {isApplying ? (
+                            <>
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              Applying...
+                            </>
+                          ) : isQueued ? (
+                            <>
+                              <Clock className="h-4 w-4" />
+                              Queued
+                            </>
+                          ) : (
+                            <>
+                              <Send className="h-4 w-4" />
+                              Apply
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
+                    
+                    {isApplied && (
+                      <div className="mt-4 pt-4 border-t border-gray-100">
+                        <span className="text-sm text-green-600 flex items-center gap-1">
+                          <CheckCircle className="h-4 w-4" />
+                          Application submitted
+                        </span>
+                      </div>
+                    )}
                   </div>
-                  
-                  {/* Action Buttons for Easy Apply Jobs */}
-                  {job.easy_apply && !isApplied && (
-                    <div className="mt-4 pt-4 border-t border-gray-100 flex items-center gap-3 flex-wrap">
-                      <button
-                        onClick={() => handleTailor(job.id)}
-                        disabled={isTailoring || !selectedResumeId}
-                        className={clsx(
-                          "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
-                          hasTailored
-                            ? "bg-green-100 text-green-700 hover:bg-green-200"
-                            : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                        )}
-                      >
-                        {isTailoring ? (
-                          <>
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                            Tailoring...
-                          </>
-                        ) : hasTailored ? (
-                          <>
-                            <CheckCircle className="h-4 w-4" />
-                            Tailored
-                          </>
-                        ) : (
-                          <>
-                            <FileText className="h-4 w-4" />
-                            Tailor Resume
-                          </>
-                        )}
-                      </button>
-                      
-                      <button
-                        onClick={() => setShowApplyModal(job.id)}
-                        disabled={isApplying || isQueued}
-                        className={clsx(
-                          "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
-                          isQueued
-                            ? "bg-yellow-100 text-yellow-700"
-                            : "btn-primary py-1.5"
-                        )}
-                      >
-                        {isApplying ? (
-                          <>
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                            Applying...
-                          </>
-                        ) : isQueued ? (
-                          <>
-                            <Clock className="h-4 w-4" />
-                            Queued
-                          </>
-                        ) : (
-                          <>
-                            <Send className="h-4 w-4" />
-                            Apply
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  )}
-                  
-                  {isApplied && (
-                    <div className="mt-4 pt-4 border-t border-gray-100">
-                      <span className="text-sm text-green-600 flex items-center gap-1">
-                        <CheckCircle className="h-4 w-4" />
-                        Application submitted
-                      </span>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          </>
         )}
 
-        {/* Apply Confirmation Modal */}
         {showApplyModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">

@@ -87,10 +87,8 @@ class JobSearchTask:
         )
 
         try:
-            # Update task status to running
-            await self._update_task_status(task_id, "running", "Task started")
+            await self._update_task_status(task_id, "running", "Connecting to LinkedIn...")
 
-            # Check rate limits
             if not await self.rate_limiter.check_search_limit(user_id):
                 await self._update_task_status(
                     task_id,
@@ -102,7 +100,6 @@ class JobSearchTask:
                     "message": "Daily search limit exceeded"
                 }
 
-            # Get search profile
             profile = await self._get_search_profile(search_profile_id)
             if not profile:
                 await self._update_task_status(
@@ -115,7 +112,6 @@ class JobSearchTask:
                     "message": "Search profile not found"
                 }
 
-            # Verify profile belongs to user
             if profile.user_id != user_id:
                 await self._update_task_status(
                     task_id,
@@ -127,24 +123,24 @@ class JobSearchTask:
                     "message": "Access denied"
                 }
 
-            # Execute LinkedIn search using user's session
+            await self._update_task_status(task_id, "running", f"Searching for '{profile.keywords}' jobs in {profile.location}...")
+
             jobs = await self._search_linkedin(
                 keywords=profile.keywords,
                 location=profile.location,
                 user_id=user_id
             )
 
-            # Store jobs in database
+            await self._update_task_status(task_id, "running", f"Found {len(jobs)} jobs, saving to your dashboard...")
+
             new_jobs_count = await self._store_jobs(
                 jobs=jobs,
                 user_id=user_id,
                 search_profile_id=search_profile_id
             )
 
-            # Calculate duration
             duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
 
-            # Update task status to completed
             await self._update_task_status(
                 task_id,
                 "completed",

@@ -5,6 +5,8 @@ from app.models.job_search_profile import JobSearchProfile
 from app.models.job import Job
 from app.models.tailored_resume import TailoredResume
 from app.models.llm_usage_log import LLMUsageLog
+from app.models.application import Application
+from app.models.linkedin_session import LinkedInSession
 
 __all__ = [
     "Base",
@@ -15,4 +17,6 @@ __all__ = [
     "Job",
     "TailoredResume",
     "LLMUsageLog",
+    "Application",
+    "LinkedInSession",
 ]

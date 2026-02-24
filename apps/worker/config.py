@@ -36,5 +36,8 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
 
+    # Security
+    secret_key: str = "your-secret-key"
+
 
 settings = Settings()

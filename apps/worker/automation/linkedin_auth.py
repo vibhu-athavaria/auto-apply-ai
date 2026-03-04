@@ -3,11 +3,15 @@
 Logs in with email + password, extracts the li_at session cookie.
 The password is NEVER stored — it is used once and discarded.
 Only the resulting li_at cookie is persisted (encrypted).
+
+Browser state (cookies, localStorage) is persisted per user to maintain
+device identity and prevent "new device" security alerts from LinkedIn.
 """
 import asyncio
-from typing import Optional
+import json
+from typing import Optional, Dict, Any, Tuple
 
-from playwright.async_api import async_playwright, Page, TimeoutError as PlaywrightTimeout
+from playwright.async_api import async_playwright, Page, BrowserContext, TimeoutError as PlaywrightTimeout
 
 from utils.logger import get_logger
 from utils.delays import human_delay, typing_delay, action_delay, navigation_delay
@@ -44,17 +48,26 @@ class LinkedInAuthenticator:
 
     The password is never stored — it is passed in, used once, then
     discarded. Only the li_at cookie from the resulting session is returned.
+
+    Browser state is persisted to maintain device identity across sessions,
+    preventing LinkedIn from sending "new device" security alerts.
     """
 
-    async def login(self, email: str, password: str) -> str:
-        """Log into LinkedIn and return the li_at session cookie.
+    async def login(
+        self,
+        email: str,
+        password: str,
+        stored_state: Optional[Dict[str, Any]] = None
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Log into LinkedIn and return the li_at session cookie and browser state.
 
         Args:
             email: LinkedIn account email
             password: LinkedIn account password (never stored)
+            stored_state: Previously saved browser state (cookies, localStorage)
 
         Returns:
-            li_at session cookie value
+            Tuple of (li_at cookie value, browser state dict)
 
         Raises:
             LinkedInInvalidCredentials: If email/password are wrong
@@ -63,20 +76,37 @@ class LinkedInAuthenticator:
         """
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 720},
-                user_agent=(
+            
+            context_options = {
+                "viewport": {"width": 1280, "height": 720},
+                "user_agent": (
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/120.0.0.0 Safari/537.36"
                 )
-            )
+            }
+            
+            if stored_state:
+                context_options["storage_state"] = stored_state
+                logger.info(
+                    "Loaded existing browser state for device persistence",
+                    extra={"action": "linkedin_login", "status": "state_loaded"}
+                )
+            
+            context = await browser.new_context(**context_options)
 
             try:
                 page = await context.new_page()
                 await self._do_login(page, email, password)
                 li_at = await self._extract_li_at(context)
-                return li_at
+                browser_state = await context.storage_state()
+                
+                logger.info(
+                    "Browser state saved for device persistence",
+                    extra={"action": "linkedin_login", "status": "state_saved"}
+                )
+                
+                return li_at, browser_state
             finally:
                 await context.close()
                 await browser.close()

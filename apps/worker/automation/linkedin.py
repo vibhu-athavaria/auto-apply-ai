@@ -7,6 +7,9 @@ This module handles:
 - Session management
 
 CRITICAL: Never store LinkedIn passwords. Use session cookies only.
+
+Browser state (cookies, localStorage) is persisted per user to maintain
+device identity and prevent "new device" security alerts from LinkedIn.
 """
 import json
 from typing import Optional, Dict, Any
@@ -29,15 +32,20 @@ class LinkedInClient:
 
     Uses session cookie (li_at) for authentication.
     Never stores or handles LinkedIn passwords.
+
+    Browser state is persisted to maintain device identity across sessions,
+    preventing LinkedIn from sending "new device" security alerts.
     """
 
-    def __init__(self, session_cookie: str = None):
+    def __init__(self, session_cookie: str = None, browser_state: Dict[str, Any] = None):
         """Initialize LinkedIn client.
 
         Args:
             session_cookie: LinkedIn li_at session cookie value
+            browser_state: Previously saved browser state for device persistence
         """
         self.session_cookie = session_cookie or settings.linkedin_session_cookie
+        self.browser_state = browser_state
         self._playwright = None
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
@@ -64,19 +72,46 @@ class LinkedInClient:
 
         self._playwright = await async_playwright().start()
 
-        # Launch browser
+        browser_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--disable-web-security",
+            "--disable-features=IsolateOrigins,site-per-process",
+        ]
+
         self._browser = await self._playwright.chromium.launch(
-            headless=settings.headless_browser
+            headless=settings.headless_browser,
+            args=browser_args
         )
 
-        # Create context with session cookie
-        self._context = await self._browser.new_context(
-            viewport={"width": 1280, "height": 720},
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
+        context_options = {
+            "viewport": {"width": 1280, "height": 720},
+            "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "locale": "en-US",
+            "timezone_id": "America/New_York",
+        }
 
-        # Add session cookie if provided
+        if self.browser_state:
+            context_options["storage_state"] = self.browser_state
+            logger.info(
+                "Loaded existing browser state for device persistence",
+                extra={
+                    "action": "start_client",
+                    "status": "state_loaded"
+                }
+            )
+
+        self._context = await self._browser.new_context(**context_options)
+
         if self.session_cookie:
+            logger.info(
+                f"Setting LinkedIn session cookie (li_at), length: {len(self.session_cookie)}",
+                extra={
+                    "action": "start_client",
+                    "status": "setting_cookie",
+                    "cookie_length": len(self.session_cookie),
+                    "cookie_prefix": self.session_cookie[:20] + "..." if len(self.session_cookie) > 20 else self.session_cookie
+                }
+            )
             await self._context.add_cookies([
                 {
                     "name": "li_at",
@@ -88,7 +123,24 @@ class LinkedInClient:
                 }
             ])
 
-        # Create page
+            # Verify cookie was set
+            cookies = await self._context.cookies()
+            li_at_cookie = next((c for c in cookies if c.get("name") == "li_at"), None)
+            if li_at_cookie:
+                logger.info(
+                    "Session cookie verified in browser context",
+                    extra={
+                        "action": "start_client",
+                        "status": "cookie_verified",
+                        "cookie_domain": li_at_cookie.get("domain")
+                    }
+                )
+            else:
+                logger.warning(
+                    "Session cookie not found in browser context after setting",
+                    extra={"action": "start_client", "status": "cookie_not_found"}
+                )
+
         self._page = await self._context.new_page()
         self._page.set_default_timeout(settings.browser_timeout)
 
@@ -132,6 +184,24 @@ class LinkedInClient:
             }
         )
 
+    async def get_browser_state(self) -> Optional[Dict[str, Any]]:
+        """Get current browser state for device persistence.
+
+        Returns:
+            Browser state dict or None if context not available
+        """
+        if self._context:
+            state = await self._context.storage_state()
+            logger.info(
+                "Retrieved browser state for device persistence",
+                extra={
+                    "action": "get_browser_state",
+                    "status": "success"
+                }
+            )
+            return state
+        return None
+
     async def navigate_to_jobs(self) -> bool:
         """Navigate to LinkedIn jobs page.
 
@@ -162,11 +232,11 @@ class LinkedInClient:
                 return True
             else:
                 logger.warning(
-                    "Not logged in to LinkedIn",
+                    "Not logged in to LinkedIn - Session cookie may be expired",
                     extra={
                         "action": "navigate_to_jobs",
                         "status": "failed",
-                        "message": "Session cookie may be expired"
+                        "reason": "Session cookie may be expired"
                     }
                 )
                 return False
@@ -189,21 +259,71 @@ class LinkedInClient:
             True if logged in, False otherwise
         """
         try:
-            # Check for presence of global-nav element or user-specific elements
-            # LinkedIn shows different content when logged in
-            await self._page.wait_for_selector(
-                "div.global-nav, div.jobs-search, div.scaffold-layout",
-                timeout=5000
+            current_url = self._page.url
+            logger.info(
+                f"Checking login status, current URL: {current_url}",
+                extra={
+                    "action": "check_login",
+                    "status": "checking",
+                    "current_url": current_url
+                }
             )
 
-            # Check URL - if redirected to login page, not logged in
-            current_url = self._page.url
+            # Check URL first - if redirected to login page, not logged in
             if "login" in current_url or "authwall" in current_url:
+                logger.warning(
+                    "Not logged in - redirected to login/authwall",
+                    extra={"action": "check_login", "status": "not_logged_in", "url": current_url}
+                )
                 return False
 
-            return True
+            # Check for presence of global-nav element or user-specific elements
+            # LinkedIn shows different content when logged in
+            # Try multiple selectors as LinkedIn changes their UI frequently
+            logged_in_selectors = [
+                "div.global-nav",
+                "div.jobs-search",
+                "div.scaffold-layout",
+                "[data-test-id='global-nav']",
+                "nav.global-nav",
+                ".jobs-search-results",
+                "[data-test-job-search-results]",
+                "div.feed-shared-update-v2",
+                "button[aria-label*='Me' i]",
+                "img[alt*='photo' i]",
+            ]
 
-        except Exception:
+            for selector in logged_in_selectors:
+                try:
+                    await self._page.wait_for_selector(selector, timeout=1000)
+                    logger.info(
+                        f"Login check passed - found selector: {selector}",
+                        extra={"action": "check_login", "status": "logged_in", "selector": selector}
+                    )
+                    return True
+                except:
+                    continue
+
+            # If we're on /jobs and not redirected to login, we're probably logged in
+            # even if selectors don't match
+            if "/jobs" in current_url and "login" not in current_url:
+                logger.info(
+                    "Login check passed - on jobs page without redirect",
+                    extra={"action": "check_login", "status": "logged_in", "method": "url_check"}
+                )
+                return True
+
+            logger.warning(
+                "Login check failed - no logged-in indicators found",
+                extra={"action": "check_login", "status": "no_indicators", "url": current_url}
+            )
+            return False
+
+        except Exception as e:
+            logger.error(
+                f"Error checking login status: {e}",
+                extra={"action": "check_login", "status": "error", "error": str(e)}
+            )
             return False
 
     @property

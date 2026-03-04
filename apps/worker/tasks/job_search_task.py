@@ -6,6 +6,9 @@ This module handles the execution of job search tasks:
 3. Store jobs in database
 4. Update task status in Redis
 5. Handle deduplication
+
+Browser state is persisted per user to maintain device identity
+and prevent "new device" security alerts from LinkedIn.
 """
 import json
 from datetime import datetime
@@ -28,6 +31,9 @@ from utils.delays import search_delay
 from utils.session_store import get_user_session
 
 logger = get_logger(__name__)
+
+BROWSER_STATE_KEY_PREFIX = "li_autopilot:worker:browser_state"
+BROWSER_STATE_TTL = 86400 * 30  # 30 days
 
 
 class JobSearchTask:
@@ -87,7 +93,7 @@ class JobSearchTask:
         )
 
         try:
-            await self._update_task_status(task_id, "running", "Connecting to LinkedIn...")
+            await self._update_task_status(task_id, "running", "Authenticating with LinkedIn...")
 
             if not await self.rate_limiter.check_search_limit(user_id):
                 await self._update_task_status(
@@ -123,7 +129,7 @@ class JobSearchTask:
                     "message": "Access denied"
                 }
 
-            await self._update_task_status(task_id, "running", f"Searching for '{profile.keywords}' jobs in {profile.location}...")
+            await self._update_task_status(task_id, "running", f"Searching LinkedIn for '{profile.keywords}' jobs in {profile.location}...")
 
             jobs = await self._search_linkedin(
                 keywords=profile.keywords,
@@ -131,7 +137,7 @@ class JobSearchTask:
                 user_id=user_id
             )
 
-            await self._update_task_status(task_id, "running", f"Found {len(jobs)} jobs, saving to your dashboard...")
+            await self._update_task_status(task_id, "running", f"Found {len(jobs)} jobs on LinkedIn, checking for new opportunities...")
 
             new_jobs_count = await self._store_jobs(
                 jobs=jobs,
@@ -141,10 +147,12 @@ class JobSearchTask:
 
             duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
 
+            completion_message = f"Search complete! Found {len(jobs)} jobs on LinkedIn, {new_jobs_count} new opportunities saved to your dashboard."
+
             await self._update_task_status(
                 task_id,
                 "completed",
-                f"Found {len(jobs)} jobs, {new_jobs_count} new",
+                completion_message,
                 jobs_found=len(jobs)
             )
 
@@ -225,7 +233,7 @@ class JobSearchTask:
         Returns:
             List of job dictionaries
         """
-        session_cookie = await get_user_session(self.redis, user_id)
+        session_cookie = await get_user_session(self.redis, user_id, self.db)
 
         if not session_cookie:
             raise Exception(
@@ -233,7 +241,15 @@ class JobSearchTask:
                 "User must connect their LinkedIn account first."
             )
 
-        async with LinkedInClient(session_cookie=session_cookie) as client:
+        browser_state = await self._get_browser_state(user_id)
+
+        client = LinkedInClient(
+            session_cookie=session_cookie,
+            browser_state=browser_state
+        )
+        await client.start()
+
+        try:
             if not await client.navigate_to_jobs():
                 raise Exception(
                     "LinkedIn authentication failed. "
@@ -248,7 +264,43 @@ class JobSearchTask:
                 max_results=50
             )
 
+            updated_state = await client.get_browser_state()
+            if updated_state:
+                await self._store_browser_state(user_id, updated_state)
+
             return jobs
+        finally:
+            await client.close()
+
+    async def _get_browser_state(self, user_id: str) -> dict | None:
+        """Retrieve stored browser state for device persistence.
+
+        Args:
+            user_id: User ID
+
+        Returns:
+            Browser state dict or None if not found
+        """
+        key = f"{BROWSER_STATE_KEY_PREFIX}:{user_id}"
+        state_json = await self.redis.get(key)
+
+        if state_json:
+            return json.loads(state_json)
+        return None
+
+    async def _store_browser_state(self, user_id: str, browser_state: dict) -> None:
+        """Store browser state for device persistence.
+
+        Args:
+            user_id: User ID
+            browser_state: Playwright storage state (cookies, localStorage)
+        """
+        key = f"{BROWSER_STATE_KEY_PREFIX}:{user_id}"
+        await self.redis.setex(
+            key,
+            BROWSER_STATE_TTL,
+            json.dumps(browser_state)
+        )
 
     async def _store_jobs(
         self,

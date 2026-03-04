@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-linkedin_password}
       POSTGRES_DB: ${POSTGRES_DB:-linkedin_autopilot}
     ports:
-      - "5433:5432"
+      - "5435:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -60,6 +60,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-linkedin_user}:${POSTGRES_PASSWORD:-linkedin_password}@postgres:5432/${POSTGRES_DB:-linkedin_autopilot}
       REDIS_URL: redis://redis:6379
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
       LINKEDIN_SESSION_COOKIE: ${LINKEDIN_SESSION_COOKIE:-}
       HEADLESS_BROWSER: ${HEADLESS_BROWSER:-true}
       BROWSER_TIMEOUT: ${BROWSER_TIMEOUT:-30000}

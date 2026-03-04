@@ -19,3 +19,7 @@ asyncio>=3.4.3
 
 # Encryption for session cookies
 cryptography>=41.0.0
+
+# Testing dependencies
+pytest>=7.0.0
+pytest-asyncio>=0.21.0

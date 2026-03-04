@@ -5,6 +5,9 @@ This task:
 2. Uses EasyApplyHandler for browser automation
 3. Updates application status in database
 4. Implements retry with exponential backoff
+
+Browser state is persisted per user to maintain device identity
+and prevent "new device" security alerts from LinkedIn.
 """
 import json
 from datetime import datetime
@@ -34,6 +37,8 @@ logger = get_logger(__name__)
 QUEUE_KEY = "li_autopilot:worker:queue:applications"
 TASK_KEY_PREFIX = "li_autopilot:worker:application_task"
 DEDUP_KEY_PREFIX = "li_autopilot:worker:application_dedup"
+BROWSER_STATE_KEY_PREFIX = "li_autopilot:worker:browser_state"
+BROWSER_STATE_TTL = 86400 * 30  # 30 days
 
 
 class ApplicationTaskError(Exception):
@@ -190,7 +195,7 @@ class ApplicationTask:
     ) -> dict:
         """Apply to job with retry logic using per-user session cookie."""
         if not session_cookie:
-            session_cookie = await get_user_session(self.redis, user_id)
+            session_cookie = await get_user_session(self.redis, user_id, self.db)
 
         if not session_cookie:
             raise EasyApplyError(
@@ -198,7 +203,15 @@ class ApplicationTask:
                 "User must connect their LinkedIn account first."
             )
 
-        async with LinkedInClient(session_cookie) as client:
+        browser_state = await self._get_browser_state(user_id)
+
+        client = LinkedInClient(
+            session_cookie=session_cookie,
+            browser_state=browser_state
+        )
+        await client.start()
+
+        try:
             handler = EasyApplyHandler(client.page)
 
             result = await handler.apply_to_job(
@@ -210,7 +223,31 @@ class ApplicationTask:
             result["job_id"] = job_id
             result["applied_at"] = datetime.utcnow().isoformat()
 
+            updated_state = await client.get_browser_state()
+            if updated_state:
+                await self._store_browser_state(user_id, updated_state)
+
             return result
+        finally:
+            await client.close()
+
+    async def _get_browser_state(self, user_id: str) -> dict | None:
+        """Retrieve stored browser state for device persistence."""
+        key = f"{BROWSER_STATE_KEY_PREFIX}:{user_id}"
+        state_json = await self.redis.get(key)
+
+        if state_json:
+            return json.loads(state_json)
+        return None
+
+    async def _store_browser_state(self, user_id: str, browser_state: dict) -> None:
+        """Store browser state for device persistence."""
+        key = f"{BROWSER_STATE_KEY_PREFIX}:{user_id}"
+        await self.redis.setex(
+            key,
+            BROWSER_STATE_TTL,
+            json.dumps(browser_state)
+        )
 
     async def get_task_status(self, task_id: str) -> Optional[dict]:
         """Get status of an application task.

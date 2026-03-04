@@ -94,19 +94,19 @@ function JobsContent() {
         try {
           const status = await jobsApi.getSearchStatus(taskId);
           setTaskStatus(status.status);
-          
+
           if (status.message) {
             setSearchMessage(status.message);
           }
-          
+
           if (status.jobs_found !== undefined) {
             setJobsFound(status.jobs_found);
           }
-          
+
           if (status.status === 'running') {
             loadJobs();
           }
-          
+
           if (status.status === 'completed' || status.status === 'failed') {
             clearInterval(interval);
             setIsSearching(false);
@@ -262,10 +262,10 @@ function JobsContent() {
 
   const handleApply = async (jobId: string) => {
     const tailoredResume = tailoredResumes[jobId];
-    
+
     setApplyingJobs(prev => new Set(prev).add(jobId));
     setShowApplyModal(null);
-    
+
     try {
       const result = await jobsApi.apply(jobId, tailoredResume?.id);
       setApplicationTasks(prev => ({
@@ -367,18 +367,19 @@ function JobsContent() {
                 </div>
               </div>
               <div className="flex-1">
-                <h3 className="text-lg font-semibold text-blue-900 mb-1">
+                <h3 className="text-lg font-semibold text-blue-900 mb-2">
                   Searching LinkedIn for Jobs
                 </h3>
-                <p className="text-blue-700 mb-3">{searchMessage}</p>
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-blue-600">Jobs found:</span>
-                    <span className="text-lg font-bold text-blue-700">{jobsFound}</span>
-                  </div>
-                  <div className="flex-1 h-2 bg-blue-200 rounded-full overflow-hidden">
-                    <div className="h-full bg-blue-600 rounded-full animate-pulse" style={{ width: '60%' }}></div>
-                  </div>
+                <div className="space-y-2">
+                  <p className="text-blue-700 font-medium">{searchMessage}</p>
+                  {jobsFound > 0 && (
+                    <p className="text-sm text-blue-600">
+                      Found <span className="font-bold text-blue-800">{jobsFound}</span> jobs so far...
+                    </p>
+                  )}
+                  <p className="text-xs text-blue-500 mt-2">
+                    This may take 30-60 seconds while we search and process results
+                  </p>
                 </div>
               </div>
             </div>
@@ -438,13 +439,13 @@ function JobsContent() {
             <Briefcase className="h-12 w-12 text-gray-300 mx-auto mb-4" />
             <p className="text-gray-500 mb-2">No jobs found</p>
             <p className="text-sm text-gray-400 mb-4">
-              {isSearchInProgress 
+              {isSearchInProgress
                 ? 'Jobs will appear here as they are discovered...'
                 : 'Click "Search Jobs" to discover opportunities'}
             </p>
             {!isSearchInProgress && (
-              <button 
-                onClick={handleSearch} 
+              <button
+                onClick={handleSearch}
                 disabled={!linkedinStatus?.connected}
                 className="btn-primary disabled:opacity-50"
               >
@@ -513,7 +514,7 @@ function JobsContent() {
                         </a>
                       </div>
                     </div>
-                    
+
                     {job.easy_apply && !isApplied && (
                       <div className="mt-4 pt-4 border-t border-gray-100 flex items-center gap-3 flex-wrap">
                         <button
@@ -543,7 +544,7 @@ function JobsContent() {
                             </>
                           )}
                         </button>
-                        
+
                         <button
                           onClick={() => setShowApplyModal(job.id)}
                           disabled={isApplying || isQueued}
@@ -573,7 +574,7 @@ function JobsContent() {
                         </button>
                       </div>
                     )}
-                    
+
                     {isApplied && (
                       <div className="mt-4 pt-4 border-t border-gray-100">
                         <span className="text-sm text-green-600 flex items-center gap-1">

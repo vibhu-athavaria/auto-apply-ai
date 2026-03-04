@@ -86,14 +86,71 @@ class JobSearchScraper:
 
         try:
             # Navigate to search page
+            logger.info(
+                f"Navigating to search URL: {search_url}",
+                extra={
+                    "action": "search_jobs",
+                    "status": "navigating",
+                    "url": search_url
+                }
+            )
             await self.page.goto(search_url)
             await navigation_delay()
 
+            current_url = self.page.url
+            logger.info(
+                f"Current page URL: {current_url}",
+                extra={
+                    "action": "search_jobs",
+                    "status": "page_loaded",
+                    "current_url": current_url
+                }
+            )
+
+            # Check if we got redirected to login
+            if "login" in current_url or "authwall" in current_url:
+                # Take a screenshot for debugging
+                try:
+                    await self.page.screenshot(path="/tmp/linkedin_auth_failed.png")
+                    logger.info(
+                        "Screenshot saved to /tmp/linkedin_auth_failed.png",
+                        extra={"action": "search_jobs", "status": "screenshot_saved"}
+                    )
+                except Exception as screenshot_error:
+                    logger.warning(
+                        f"Failed to take screenshot: {screenshot_error}",
+                        extra={"action": "search_jobs", "status": "screenshot_failed"}
+                    )
+
+                logger.error(
+                    "Redirected to login page - session expired",
+                    extra={
+                        "action": "search_jobs",
+                        "status": "auth_failed",
+                        "current_url": current_url
+                    }
+                )
+                raise Exception("LinkedIn session expired. Please reconnect your account.")
+
             # Wait for job listings to load
+            logger.info(
+                "Waiting for job listings to load...",
+                extra={"action": "search_jobs", "status": "waiting_for_listings"}
+            )
             await self._wait_for_job_listings()
+
+            logger.info(
+                "Job listings loaded, scrolling for more results...",
+                extra={"action": "search_jobs", "status": "scrolling"}
+            )
 
             # Scroll to load more results
             await self._scroll_to_load_more(max_results)
+
+            logger.info(
+                "Scrolling complete, parsing job listings...",
+                extra={"action": "search_jobs", "status": "parsing"}
+            )
 
             # Parse job listings
             jobs = await self._parse_job_listings(max_results)
@@ -220,8 +277,39 @@ class JobSearchScraper:
         # Get all job cards
         job_cards = await self.page.query_selector_all(self.JOB_CARD_SELECTOR)
 
+        # Also check for alternative selectors if none found
+        if not job_cards:
+            logger.warning(
+                f"No job cards found with selector: {self.JOB_CARD_SELECTOR}",
+                extra={
+                    "action": "parse_job_listings",
+                    "status": "no_cards_found",
+                    "selector": self.JOB_CARD_SELECTOR
+                }
+            )
+            # Try alternative selectors
+            alternative_selectors = [
+                "div.job-card-container",
+                "li.jobs-search-results__list-item",
+                "div.scaffold-layout__list-item",
+                "[data-job-id]"
+            ]
+            for selector in alternative_selectors:
+                job_cards = await self.page.query_selector_all(selector)
+                if job_cards:
+                    logger.info(
+                        f"Found {len(job_cards)} job cards with alternative selector: {selector}",
+                        extra={
+                            "action": "parse_job_listings",
+                            "status": "found_with_alt_selector",
+                            "selector": selector,
+                            "cards_found": len(job_cards)
+                        }
+                    )
+                    break
+
         logger.info(
-            f"Found {len(job_cards)} job cards",
+            f"Found {len(job_cards)} job cards total",
             extra={
                 "action": "parse_job_listings",
                 "status": "in_progress",

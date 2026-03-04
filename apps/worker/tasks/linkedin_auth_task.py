@@ -3,6 +3,9 @@
 Handles the linkedin_auth queue messages.
 Runs Playwright login, extracts li_at, stores it.
 The password is used once and NEVER stored.
+
+Browser state (cookies, localStorage) is persisted per user to maintain
+device identity and prevent "new device" security alerts from LinkedIn.
 """
 import json
 from datetime import datetime, timedelta
@@ -27,7 +30,9 @@ logger = get_logger(__name__)
 
 AUTH_TASK_KEY_PREFIX = "li_autopilot:api:auth_task"
 WORKER_SESSION_KEY_PREFIX = "li_autopilot:worker:session"
+BROWSER_STATE_KEY_PREFIX = "li_autopilot:worker:browser_state"
 WORKER_SESSION_TTL = 86400
+BROWSER_STATE_TTL = 86400 * 30  # 30 days
 
 
 class LinkedInAuthTask:
@@ -71,13 +76,20 @@ class LinkedInAuthTask:
 
         try:
             await self._update_task(task_id, "connecting", "Connecting to LinkedIn...")
-            
+
+            stored_state = await self._get_browser_state(user_id)
+
             authenticator = LinkedInAuthenticator()
-            li_at = await authenticator.login(email=email, password=password)
+            li_at, browser_state = await authenticator.login(
+                email=email,
+                password=password,
+                stored_state=stored_state
+            )
 
             await self._update_task(task_id, "saving", "Saving your session...")
             await self._store_session(user_id, li_at)
-            
+            await self._store_browser_state(user_id, browser_state)
+
             await self._update_task(task_id, "connected", "LinkedIn connected successfully")
 
             logger.info(
@@ -191,4 +203,61 @@ class LinkedInAuthTask:
                 "status": status,
                 "message": message,
             })
+        )
+
+    async def _get_browser_state(self, user_id: str) -> dict | None:
+        """Retrieve stored browser state for device persistence.
+
+        Args:
+            user_id: User ID
+
+        Returns:
+            Browser state dict or None if not found
+        """
+        key = f"{BROWSER_STATE_KEY_PREFIX}:{user_id}"
+        state_json = await self.redis.get(key)
+
+        if state_json:
+            logger.info(
+                "Retrieved browser state for device persistence",
+                extra={
+                    "user_id": user_id,
+                    "action": "get_browser_state",
+                    "status": "found"
+                }
+            )
+            return json.loads(state_json)
+
+        logger.info(
+            "No browser state found, starting fresh",
+            extra={
+                "user_id": user_id,
+                "action": "get_browser_state",
+                "status": "not_found"
+            }
+        )
+        return None
+
+    async def _store_browser_state(self, user_id: str, browser_state: dict) -> None:
+        """Store browser state for device persistence.
+
+        Args:
+            user_id: User ID
+            browser_state: Playwright storage state (cookies, localStorage)
+        """
+        key = f"{BROWSER_STATE_KEY_PREFIX}:{user_id}"
+        await self.redis.setex(
+            key,
+            BROWSER_STATE_TTL,
+            json.dumps(browser_state)
+        )
+
+        logger.info(
+            "Stored browser state for device persistence",
+            extra={
+                "user_id": user_id,
+                "action": "store_browser_state",
+                "status": "success",
+                "ttl_days": BROWSER_STATE_TTL // 86400
+            }
         )

@@ -2,7 +2,7 @@
 
 import DashboardLayout from '@/components/DashboardLayout';
 import { useAuth } from '@/lib/auth';
-import { Briefcase, FileText, Search, TrendingUp } from 'lucide-react';
+import { Briefcase, FileText, Search, Sparkles, TrendingUp } from 'lucide-react';
 
 export default function DashboardPage() {
   const { user } = useAuth();
@@ -45,6 +45,13 @@ export default function DashboardPage() {
           <div className="card">
             <h2 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h2>
             <div className="space-y-3">
+              <a
+                href="/dashboard/wizard"
+                className="flex items-center gap-3 p-3 rounded-lg bg-linkedin-blue bg-opacity-10 hover:bg-opacity-20 transition-colors"
+              >
+                <Sparkles className="h-5 w-5 text-linkedin-blue" />
+                <span className="font-medium text-linkedin-blue">Create Profile Wizard</span>
+              </a>
               <a
                 href="/dashboard/resumes"
                 className="flex items-center gap-3 p-3 rounded-lg bg-gray-50 hover:bg-gray-100 transition-colors"

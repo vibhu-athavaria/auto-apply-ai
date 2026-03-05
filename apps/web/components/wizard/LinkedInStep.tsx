@@ -225,7 +225,7 @@ export default function LinkedInStep({
               <h3 className="text-lg font-semibold text-gray-900">Skip LinkedIn Connection?</h3>
             </div>
             <p className="text-gray-600 mb-6">
-              Without LinkedIn connected, you won't be able to search for jobs or submit
+              Without LinkedIn connected, you won&apos;t be able to search for jobs or submit
               applications. You can always connect later from the settings.
             </p>
             <div className="flex gap-3">

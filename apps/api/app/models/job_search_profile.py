@@ -13,5 +13,7 @@ class JobSearchProfile(Base, TimestampMixin):
     keywords = Column(String(500), nullable=False)
     location = Column(String(255), nullable=False)
     remote_preference = Column(String(50), nullable=True)
+    experience_level = Column(String(50), nullable=True)
+    job_type = Column(String(50), nullable=True)
     salary_min = Column(Float, nullable=True)
     salary_max = Column(Float, nullable=True)

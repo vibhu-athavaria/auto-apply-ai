@@ -66,7 +66,13 @@ export const resumeApi = {
 
 // Job Search Profile API
 export const profileApi = {
-  create: async (data: { keywords: string; location: string }) => {
+  create: async (data: {
+    keywords: string;
+    location: string;
+    remote_preference?: string;
+    experience_level?: string;
+    job_type?: string;
+  }) => {
     const response = await api.post('/profiles/', data);
     return response.data;
   },

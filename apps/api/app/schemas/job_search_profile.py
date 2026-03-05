@@ -6,6 +6,8 @@ class JobSearchProfileBase(BaseModel):
     keywords: str
     location: str
     remote_preference: Optional[str] = None
+    experience_level: Optional[str] = None
+    job_type: Optional[str] = None
     salary_min: Optional[float] = None
     salary_max: Optional[float] = None
 
@@ -16,6 +18,8 @@ class JobSearchProfileUpdate(BaseModel):
     keywords: Optional[str] = None
     location: Optional[str] = None
     remote_preference: Optional[str] = None
+    experience_level: Optional[str] = None
+    job_type: Optional[str] = None
     salary_min: Optional[float] = None
     salary_max: Optional[float] = None
 

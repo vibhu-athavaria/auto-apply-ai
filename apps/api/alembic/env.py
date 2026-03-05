@@ -2,9 +2,14 @@ import asyncio
 from logging.config import fileConfig
 
 from sqlalchemy import pool
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import context
+
+# Import app settings to get DATABASE_URL
+import sys
+sys.path.insert(0, '/app')
+from app.config import settings
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -20,10 +25,8 @@ if config.config_file_name is not None:
 from app.models import Base
 target_metadata = Base.metadata
 
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
-# my_important_option = config.get_main_option("my_important_option")
-# ... etc.
+# Get DATABASE_URL from app settings
+database_url = settings.database_url
 
 
 def run_migrations_offline() -> None:
@@ -38,20 +41,12 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=url,
+        url=database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
     )
-
-    with context.begin_transaction():
-        context.run_migrations()
-
-
-def do_run_migrations(connection):
-    context.configure(connection=connection, target_metadata=target_metadata)
 
     with context.begin_transaction():
         context.run_migrations()
@@ -63,9 +58,8 @@ async def run_async_migrations():
 
     """
 
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section),
-        prefix="sqlalchemy.",
+    connectable = create_async_engine(
+        database_url,
         poolclass=pool.NullPool,
     )
 
@@ -73,6 +67,13 @@ async def run_async_migrations():
         await connection.run_sync(do_run_migrations)
 
     await connectable.dispose()
+
+
+def do_run_migrations(connection):
+    context.configure(connection=connection, target_metadata=target_metadata)
+
+    with context.begin_transaction():
+        context.run_migrations()
 
 
 def run_migrations_online() -> None:

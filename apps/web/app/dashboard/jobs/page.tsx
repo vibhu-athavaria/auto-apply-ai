@@ -4,7 +4,11 @@ import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import DashboardLayout from '@/components/DashboardLayout';
 import { jobsApi, profileApi, resumeApi, linkedinApi } from '@/lib/api';
-import { Briefcase, MapPin, ExternalLink, RefreshCw, CheckCircle, Clock, XCircle, Zap, Send, FileText, Loader2, Search } from 'lucide-react';
+import {
+  Briefcase, MapPin, ExternalLink, RefreshCw, CheckCircle, Clock, XCircle,
+  Zap, Send, FileText, Loader2, Search, ChevronLeft, ChevronRight,
+  FileEdit, FileSpreadsheet, Eye, Award, X
+} from 'lucide-react';
 import toast from 'react-hot-toast';
 import clsx from 'clsx';
 
@@ -18,6 +22,8 @@ interface Job {
   easy_apply: boolean;
   status: string;
   discovered_at: string;
+  description?: string;
+  match_score?: number;
 }
 
 interface JobSearchProfile {
@@ -40,7 +46,7 @@ interface TailoredResume {
   id: string;
   job_id: string;
   tailored_resume_text: string;
-  cover_letter_text?: string;
+  cover_letter?: string;
 }
 
 function JobsContent() {
@@ -57,12 +63,22 @@ function JobsContent() {
   const [taskId, setTaskId] = useState<string | null>(null);
   const [taskStatus, setTaskStatus] = useState<string | null>(null);
 
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalJobs, setTotalJobs] = useState(0);
+  const jobsPerPage = 10;
+
   const [resumes, setResumes] = useState<Resume[]>([]);
   const [tailoredResumes, setTailoredResumes] = useState<Record<string, TailoredResume>>({});
+  const [matchScores, setMatchScores] = useState<Record<string, number>>({});
+  const [calculatingScores, setCalculatingScores] = useState<Set<string>>(new Set());
   const [applyingJobs, setApplyingJobs] = useState<Set<string>>(new Set());
   const [tailoringJobs, setTailoringJobs] = useState<Set<string>>(new Set());
+  const [tailoringCoverLetterJobs, setTailoringCoverLetterJobs] = useState<Set<string>>(new Set());
   const [selectedResumeId, setSelectedResumeId] = useState<string>('');
   const [showApplyModal, setShowApplyModal] = useState<string | null>(null);
+  const [showDetailsModal, setShowDetailsModal] = useState<Job | null>(null);
+  const [showTailoredModal, setShowTailoredModal] = useState<{jobId: string, type: 'resume' | 'cover_letter'} | null>(null);
   const [applicationTasks, setApplicationTasks] = useState<Record<string, string>>({});
   const [linkedinStatus, setLinkedinStatus] = useState<LinkedInStatus>({ connected: false, status: 'not_set' });
   const [searchMessage, setSearchMessage] = useState<string>('');
@@ -78,6 +94,7 @@ function JobsContent() {
     if (selectedProfileId) {
       const profile = profiles.find(p => p.id === selectedProfileId);
       setSelectedProfile(profile || null);
+      setCurrentPage(1); // Reset to first page when profile changes
       loadJobs();
     }
   }, [selectedProfileId, statusFilter, profiles]);
@@ -87,6 +104,10 @@ function JobsContent() {
       setSelectedProfileId(profileIdFromUrl);
     }
   }, [profileIdFromUrl]);
+
+  useEffect(() => {
+    loadJobs();
+  }, [currentPage]);
 
   useEffect(() => {
     if (taskId && (taskStatus === 'running' || taskStatus === 'queued')) {
@@ -199,12 +220,37 @@ function JobsContent() {
     if (!selectedProfileId) return;
     setIsLoading(true);
     try {
-      const data = await jobsApi.list(selectedProfileId, statusFilter || undefined);
+      const offset = (currentPage - 1) * jobsPerPage;
+      const data = await jobsApi.list(selectedProfileId, statusFilter || undefined, jobsPerPage, offset);
       setJobs(data.jobs || []);
+      setTotalJobs(data.total || 0);
+
+      // Fetch match scores for jobs
+      fetchMatchScores(data.jobs || []);
     } catch (error) {
       console.error('Failed to load jobs:', error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const fetchMatchScores = async (jobsList: Job[]) => {
+    for (const job of jobsList) {
+      if (!job.match_score && !calculatingScores.has(job.id)) {
+        setCalculatingScores(prev => new Set(prev).add(job.id));
+        try {
+          const result = await jobsApi.getMatchScore(job.id, selectedResumeId);
+          setMatchScores(prev => ({ ...prev, [job.id]: result.score }));
+        } catch (error) {
+          console.error(`Failed to fetch match score for job ${job.id}:`, error);
+        } finally {
+          setCalculatingScores(prev => {
+            const updated = new Set(prev);
+            updated.delete(job.id);
+            return updated;
+          });
+        }
+      }
     }
   };
 
@@ -245,7 +291,7 @@ function JobsContent() {
       const result = await jobsApi.tailor(jobId, selectedResumeId);
       setTailoredResumes(prev => ({
         ...prev,
-        [jobId]: result
+        [jobId]: result.tailored_resume
       }));
       toast.success('Resume tailored successfully!');
     } catch (error: any) {
@@ -253,6 +299,32 @@ function JobsContent() {
       toast.error(message);
     } finally {
       setTailoringJobs(prev => {
+        const updated = new Set(prev);
+        updated.delete(jobId);
+        return updated;
+      });
+    }
+  };
+
+  const handleTailorCoverLetter = async (jobId: string) => {
+    if (!selectedResumeId) {
+      toast.error('Please upload a resume first');
+      return;
+    }
+
+    setTailoringCoverLetterJobs(prev => new Set(prev).add(jobId));
+    try {
+      const result = await jobsApi.tailor(jobId, selectedResumeId);
+      setTailoredResumes(prev => ({
+        ...prev,
+        [jobId]: result.tailored_resume
+      }));
+      toast.success('Cover letter generated successfully!');
+    } catch (error: any) {
+      const message = error.response?.data?.detail || 'Failed to generate cover letter';
+      toast.error(message);
+    } finally {
+      setTailoringCoverLetterJobs(prev => {
         const updated = new Set(prev);
         updated.delete(jobId);
         return updated;
@@ -310,6 +382,13 @@ function JobsContent() {
     return styles[status] || styles.discovered;
   };
 
+  const getMatchScoreColor = (score: number) => {
+    if (score >= 80) return 'bg-green-500 text-white';
+    if (score >= 60) return 'bg-yellow-500 text-white';
+    if (score >= 40) return 'bg-orange-500 text-white';
+    return 'bg-red-500 text-white';
+  };
+
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('en-US', {
       month: 'short',
@@ -317,7 +396,34 @@ function JobsContent() {
     });
   };
 
+  const totalPages = Math.ceil(totalJobs / jobsPerPage);
   const isSearchInProgress = isSearching || taskStatus === 'running' || taskStatus === 'queued';
+
+  const renderPagination = () => {
+    if (totalPages <= 1) return null;
+
+    return (
+      <div className="flex items-center justify-center gap-2 mt-6">
+        <button
+          onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+          disabled={currentPage === 1}
+          className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <ChevronLeft className="h-5 w-5" />
+        </button>
+        <span className="text-sm text-gray-600">
+          Page {currentPage} of {totalPages}
+        </span>
+        <button
+          onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+          disabled={currentPage === totalPages}
+          className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <ChevronRight className="h-5 w-5" />
+        </button>
+      </div>
+    );
+  };
 
   return (
     <DashboardLayout>
@@ -457,7 +563,7 @@ function JobsContent() {
           <>
             <div className="flex items-center justify-between mb-4">
               <span className="text-sm text-gray-600">
-                {jobs.length} job{jobs.length !== 1 ? 's' : ''} found
+                Showing {jobs.length} of {totalJobs} job{totalJobs !== 1 ? 's' : ''}
                 {isSearchInProgress && ' (searching...)'}
               </span>
             </div>
@@ -465,9 +571,12 @@ function JobsContent() {
               {jobs.map((job) => {
                 const isApplying = applyingJobs.has(job.id);
                 const isTailoring = tailoringJobs.has(job.id);
+                const isTailoringCoverLetter = tailoringCoverLetterJobs.has(job.id);
                 const hasTailored = !!tailoredResumes[job.id];
                 const isApplied = job.status === 'applied';
                 const isQueued = !!applicationTasks[job.id];
+                const score = matchScores[job.id] ?? job.match_score;
+                const isCalculatingScore = calculatingScores.has(job.id);
 
                 return (
                   <div key={job.id} className="card hover:shadow-md transition-shadow">
@@ -478,7 +587,25 @@ function JobsContent() {
                             <Briefcase className="h-5 w-5 text-linkedin-blue" />
                           </div>
                           <div className="flex-1">
-                            <h3 className="font-semibold text-gray-900">{job.title}</h3>
+                            <div className="flex items-start gap-3">
+                              <h3 className="font-semibold text-gray-900">{job.title}</h3>
+                              {/* Match Score Badge */}
+                              {score !== undefined && score !== null && (
+                                <span className={clsx(
+                                  'px-2 py-0.5 rounded-full text-xs font-medium flex items-center gap-1',
+                                  getMatchScoreColor(score)
+                                )}>
+                                  <Award className="h-3 w-3" />
+                                  {score}% Match
+                                </span>
+                              )}
+                              {isCalculatingScore && (
+                                <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-500 flex items-center gap-1">
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                  Calculating...
+                                </span>
+                              )}
+                            </div>
                             <p className="text-gray-600">{job.company}</p>
                             <div className="flex items-center gap-4 mt-2 text-sm text-gray-500 flex-wrap">
                               <div className="flex items-center gap-1">
@@ -515,44 +642,91 @@ function JobsContent() {
                       </div>
                     </div>
 
-                    {job.easy_apply && !isApplied && (
-                      <div className="mt-4 pt-4 border-t border-gray-100 flex items-center gap-3 flex-wrap">
-                        <button
-                          onClick={() => handleTailor(job.id)}
-                          disabled={isTailoring || !selectedResumeId}
-                          className={clsx(
-                            "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
-                            hasTailored
-                              ? "bg-green-100 text-green-700 hover:bg-green-200"
-                              : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                          )}
-                        >
-                          {isTailoring ? (
-                            <>
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                              Tailoring...
-                            </>
-                          ) : hasTailored ? (
-                            <>
-                              <CheckCircle className="h-4 w-4" />
-                              Tailored
-                            </>
-                          ) : (
-                            <>
-                              <FileText className="h-4 w-4" />
-                              Tailor Resume
-                            </>
-                          )}
-                        </button>
+                    {/* Action Buttons */}
+                    <div className="mt-4 pt-4 border-t border-gray-100 flex flex-wrap items-center gap-2">
+                      {/* View Details Button */}
+                      <button
+                        onClick={() => setShowDetailsModal(job)}
+                        className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+                      >
+                        <Eye className="h-4 w-4" />
+                        Details
+                      </button>
 
+                      {/* Tailor Resume Button */}
+                      <button
+                        onClick={() => handleTailor(job.id)}
+                        disabled={isTailoring || !selectedResumeId}
+                        className={clsx(
+                          "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                          tailoredResumes[job.id]?.tailored_resume_text
+                            ? "bg-green-100 text-green-700 hover:bg-green-200"
+                            : "bg-purple-100 text-purple-700 hover:bg-purple-200"
+                        )}
+                      >
+                        {isTailoring ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Tailoring...
+                          </>
+                        ) : tailoredResumes[job.id]?.tailored_resume_text ? (
+                          <>
+                            <CheckCircle className="h-4 w-4" />
+                            <span onClick={(e) => {
+                              e.stopPropagation();
+                              setShowTailoredModal({ jobId: job.id, type: 'resume' });
+                            }}>View Tailored Resume</span>
+                          </>
+                        ) : (
+                          <>
+                            <FileEdit className="h-4 w-4" />
+                            Tailor Resume
+                          </>
+                        )}
+                      </button>
+
+                      {/* Tailored Cover Letter Button */}
+                      <button
+                        onClick={() => handleTailorCoverLetter(job.id)}
+                        disabled={isTailoringCoverLetter || !selectedResumeId}
+                        className={clsx(
+                          "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                          tailoredResumes[job.id]?.cover_letter
+                            ? "bg-green-100 text-green-700 hover:bg-green-200"
+                            : "bg-indigo-100 text-indigo-700 hover:bg-indigo-200"
+                        )}
+                      >
+                        {isTailoringCoverLetter ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Generating...
+                          </>
+                        ) : tailoredResumes[job.id]?.cover_letter ? (
+                          <>
+                            <CheckCircle className="h-4 w-4" />
+                            <span onClick={(e) => {
+                              e.stopPropagation();
+                              setShowTailoredModal({ jobId: job.id, type: 'cover_letter' });
+                            }}>View Cover Letter</span>
+                          </>
+                        ) : (
+                          <>
+                            <FileSpreadsheet className="h-4 w-4" />
+                            Tailored Cover Letter
+                          </>
+                        )}
+                      </button>
+
+                      {/* Apply Button - only for Easy Apply jobs not yet applied */}
+                      {job.easy_apply && !isApplied && (
                         <button
                           onClick={() => setShowApplyModal(job.id)}
                           disabled={isApplying || isQueued}
                           className={clsx(
-                            "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                            "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ml-auto",
                             isQueued
                               ? "bg-yellow-100 text-yellow-700"
-                              : "btn-primary py-1.5"
+                              : "bg-blue-600 text-white hover:bg-blue-700"
                           )}
                         >
                           {isApplying ? (
@@ -572,8 +746,8 @@ function JobsContent() {
                             </>
                           )}
                         </button>
-                      </div>
-                    )}
+                      )}
+                    </div>
 
                     {isApplied && (
                       <div className="mt-4 pt-4 border-t border-gray-100">
@@ -587,9 +761,11 @@ function JobsContent() {
                 );
               })}
             </div>
+            {renderPagination()}
           </>
         )}
 
+        {/* Apply Modal */}
         {showApplyModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
@@ -610,6 +786,125 @@ function JobsContent() {
                 >
                   Apply Now
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Job Details Modal */}
+        {showDetailsModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+              <div className="p-6">
+                <div className="flex items-start justify-between mb-4">
+                  <div>
+                    <h2 className="text-xl font-bold text-gray-900">{showDetailsModal.title}</h2>
+                    <p className="text-gray-600">{showDetailsModal.company}</p>
+                  </div>
+                  <button
+                    onClick={() => setShowDetailsModal(null)}
+                    className="p-2 hover:bg-gray-100 rounded-lg"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-4 text-sm text-gray-500 mb-4">
+                  <div className="flex items-center gap-1">
+                    <MapPin className="h-4 w-4" />
+                    {showDetailsModal.location}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Clock className="h-4 w-4" />
+                    {formatDate(showDetailsModal.discovered_at)}
+                  </div>
+                  {showDetailsModal.easy_apply && (
+                    <div className="flex items-center gap-1 text-green-600">
+                      <Zap className="h-4 w-4" />
+                      Easy Apply
+                    </div>
+                  )}
+                </div>
+                {(matchScores[showDetailsModal.id] ?? showDetailsModal.match_score) && (
+                  <div className="mb-4">
+                    <span className={clsx(
+                      'px-3 py-1 rounded-full text-sm font-medium inline-flex items-center gap-1',
+                      getMatchScoreColor(matchScores[showDetailsModal.id] ?? showDetailsModal.match_score ?? 0)
+                    )}>
+                      <Award className="h-4 w-4" />
+                      {(matchScores[showDetailsModal.id] ?? showDetailsModal.match_score)}% Match Score
+                    </span>
+                  </div>
+                )}
+                <div className="prose prose-sm max-w-none">
+                  <h3 className="text-sm font-semibold text-gray-700 mb-2">Job Description</h3>
+                  <div className="text-gray-600 whitespace-pre-wrap">
+                    {showDetailsModal.description || 'No description available.'}
+                  </div>
+                </div>
+                <div className="mt-6 flex gap-3">
+                  <a
+                    href={showDetailsModal.job_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 btn-primary text-center"
+                  >
+                    View on LinkedIn
+                  </a>
+                  <button
+                    onClick={() => setShowDetailsModal(null)}
+                    className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg border"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Tailored Content Modal */}
+        {showTailoredModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-lg max-w-3xl w-full max-h-[90vh] overflow-y-auto">
+              <div className="p-6">
+                <div className="flex items-start justify-between mb-4">
+                  <h2 className="text-xl font-bold text-gray-900">
+                    {showTailoredModal.type === 'resume' ? 'Tailored Resume' : 'Tailored Cover Letter'}
+                  </h2>
+                  <button
+                    onClick={() => setShowTailoredModal(null)}
+                    className="p-2 hover:bg-gray-100 rounded-lg"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+                <div className="prose prose-sm max-w-none bg-gray-50 p-4 rounded-lg">
+                  <pre className="whitespace-pre-wrap text-sm text-gray-700 font-sans">
+                    {showTailoredModal.type === 'resume'
+                      ? tailoredResumes[showTailoredModal.jobId]?.tailored_resume_text
+                      : tailoredResumes[showTailoredModal.jobId]?.cover_letter}
+                  </pre>
+                </div>
+                <div className="mt-4 flex gap-3">
+                  <button
+                    onClick={() => {
+                      const text = showTailoredModal.type === 'resume'
+                        ? tailoredResumes[showTailoredModal.jobId]?.tailored_resume_text
+                        : tailoredResumes[showTailoredModal.jobId]?.cover_letter;
+                      navigator.clipboard.writeText(text || '');
+                      toast.success('Copied to clipboard!');
+                    }}
+                    className="flex-1 btn-primary"
+                  >
+                    Copy to Clipboard
+                  </button>
+                  <button
+                    onClick={() => setShowTailoredModal(null)}
+                    className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg border"
+                  >
+                    Close
+                  </button>
+                </div>
               </div>
             </div>
           </div>

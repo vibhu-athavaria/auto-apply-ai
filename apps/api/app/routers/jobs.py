@@ -12,19 +12,28 @@ from app.schemas.job import (
     JobResponse,
     JobListResponse,
     JobSearchRequest,
-    JobSearchStatusResponse
+    JobSearchStatusResponse,
+    JobMatchScoreResponse
 )
 from app.services.queue_service import QueueService, get_queue_service
+from app.services.job_matcher_service import JobMatcherService
 from app.utils.security import get_current_user
+from app.config import settings
+import redis.asyncio as redis
 
 router = APIRouter()
+
+
+def get_redis_client():
+    """Get Redis client for caching."""
+    return redis.Redis.from_url(settings.redis_url, decode_responses=True)
 
 
 @router.get("/", response_model=JobListResponse)
 async def list_jobs(
     search_profile_id: str = Query(..., description="Search profile ID"),
     status: Optional[str] = Query(None, description="Filter by job status"),
-    limit: int = Query(50, ge=1, le=100, description="Number of results"),
+    limit: int = Query(10, ge=1, le=100, description="Number of results per page (default: 10)"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -35,6 +44,7 @@ async def list_jobs(
     - Validates user owns the search profile
     - Returns jobs ordered by discovered_at desc
     - Supports filtering by status
+    - Default 10 jobs per page (configurable via limit parameter)
     """
     # Verify user owns the search profile
     profile_result = await db.execute(
@@ -74,6 +84,113 @@ async def list_jobs(
         total=total,
         limit=limit,
         offset=offset
+    )
+
+
+@router.get("/{job_id}/match-score", response_model=JobMatchScoreResponse)
+async def get_job_match_score(
+    job_id: str,
+    resume_id: Optional[str] = Query(None, description="Optional resume ID to use for matching (defaults to latest resume)"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis_client)
+):
+    """
+    Get match score for a specific job against user's resume.
+
+    Calculates a score (0-100) indicating how well the user's resume
+    matches the job requirements based on:
+    - Skills match (50% weight)
+    - Experience level match (30% weight)
+    - Job title/role match (20% weight)
+
+    Results are cached for 24 hours per AGENTS.md rules.
+    """
+    # Verify job belongs to user
+    job_result = await db.execute(
+        select(Job).where(Job.id == job_id).where(Job.user_id == current_user.id)
+    )
+    job = job_result.scalars().first()
+
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found or access denied"
+        )
+
+    # Calculate match score
+    matcher = JobMatcherService(db, redis_client)
+    score = await matcher.get_match_score(
+        user_id=current_user.id,
+        job_id=job_id,
+        resume_id=resume_id
+    )
+
+    if score is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not calculate match score. Please upload a resume first."
+        )
+
+    return JobMatchScoreResponse(
+        job_id=job_id,
+        score=score,
+        max_score=100,
+        percentage=f"{score}%"
+    )
+
+
+@router.post("/{job_id}/calculate-match", response_model=JobMatchScoreResponse)
+async def calculate_and_store_match_score(
+    job_id: str,
+    resume_id: Optional[str] = Query(None, description="Optional resume ID to use for matching"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis_client)
+):
+    """
+    Calculate and store match score for a job.
+
+    Recalculates the match score and stores it on the job record.
+    Use this when you want to force a recalculation.
+    """
+    # Verify job belongs to user
+    job_result = await db.execute(
+        select(Job).where(Job.id == job_id).where(Job.user_id == current_user.id)
+    )
+    job = job_result.scalars().first()
+
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found or access denied"
+        )
+
+    # Calculate match score (forces recalculation)
+    matcher = JobMatcherService(db, redis_client)
+
+    # Clear cache to force recalculation
+    if redis_client:
+        cache_key = matcher._generate_cache_key(current_user.id, job_id, resume_id or "")
+        await redis_client.delete(cache_key)
+
+    score = await matcher.get_match_score(
+        user_id=current_user.id,
+        job_id=job_id,
+        resume_id=resume_id
+    )
+
+    if score is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not calculate match score. Please upload a resume first."
+        )
+
+    return JobMatchScoreResponse(
+        job_id=job_id,
+        score=score,
+        max_score=100,
+        percentage=f"{score}%"
     )
 
 

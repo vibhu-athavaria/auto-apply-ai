@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Boolean, Text, ForeignKey
+from sqlalchemy import Column, String, DateTime, Boolean, Text, ForeignKey, Integer
 
 from app.database import Base
 from app.models.user import TimestampMixin
@@ -32,3 +32,4 @@ class Job(Base, TimestampMixin):
     )
     status = Column(String(50), default="discovered", nullable=False, index=True)
     discovered_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    match_score = Column(Integer, nullable=True, index=True, doc="Job match score 0-100 calculated based on resume vs job requirements")

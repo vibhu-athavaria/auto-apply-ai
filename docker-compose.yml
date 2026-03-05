@@ -82,6 +82,26 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  scheduler:
+    build:
+      context: ./apps/worker
+      dockerfile: Dockerfile
+    container_name: linkedin_autopilot_scheduler
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-linkedin_user}:${POSTGRES_PASSWORD:-linkedin_password}@postgres:5432/${POSTGRES_DB:-linkedin_autopilot}
+      REDIS_URL: redis://redis:6379
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    command: python scheduler.py
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      worker:
+        condition: service_started
+    restart: unless-stopped
+
   web:
     build:
       context: ./apps/web

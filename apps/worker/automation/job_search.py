@@ -191,10 +191,12 @@ class JobSearchScraper:
         Returns:
             Full search URL
         """
+        # f_TPR parameter: time posted range in seconds
+        # r1209600 = past 2 weeks (14 days)
         params = {
             "keywords": keywords,
             "location": location,
-            "f_TPR": "r86400",  # Past 24 hours - can be made configurable
+            "f_TPR": "r1209600",  # Past 2 weeks (14 days * 24 hours * 60 minutes * 60 seconds)
             "position": 1,
             "pageNum": 0
         }

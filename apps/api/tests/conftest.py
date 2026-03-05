@@ -47,6 +47,7 @@ def mock_redis():
     mock.set = AsyncMock(return_value=True)
     mock.rpush = AsyncMock(return_value=1)
     mock.close = AsyncMock()
+    mock.delete = AsyncMock(return_value=1)
     return mock
 
 
@@ -79,8 +80,10 @@ async def client(
 
     from app.routers.applications import get_redis as get_applications_redis
     from app.routers.linkedin import get_redis as get_linkedin_redis
+    from app.routers.jobs import get_redis_client as get_jobs_redis
     app.dependency_overrides[get_applications_redis] = override_get_redis
     app.dependency_overrides[get_linkedin_redis] = override_get_redis
+    app.dependency_overrides[get_jobs_redis] = override_get_redis
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

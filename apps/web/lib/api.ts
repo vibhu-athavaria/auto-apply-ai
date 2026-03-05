@@ -84,10 +84,19 @@ export const profileApi = {
 
 // Jobs API
 export const jobsApi = {
-  list: async (searchProfileId: string, status?: string) => {
+  list: async (searchProfileId: string, status?: string, limit: number = 10, offset: number = 0) => {
     const params = new URLSearchParams({ search_profile_id: searchProfileId });
     if (status) params.append('status', status);
+    params.append('limit', limit.toString());
+    params.append('offset', offset.toString());
     const response = await api.get(`/jobs/?${params.toString()}`);
+    return response.data;
+  },
+
+  getMatchScore: async (jobId: string, resumeId?: string) => {
+    const params = new URLSearchParams();
+    if (resumeId) params.append('resume_id', resumeId);
+    const response = await api.get(`/jobs/${jobId}/match-score?${params.toString()}`);
     return response.data;
   },
 

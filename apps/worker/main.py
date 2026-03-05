@@ -16,6 +16,7 @@ import sys
 from typing import Optional
 
 import redis.asyncio as redis
+from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -41,6 +42,8 @@ class Worker:
     APPLICATION_QUEUE = "li_autopilot:worker:queue:applications"
     AUTH_QUEUE = "li_autopilot:tasks:linkedin_auth"
     POLL_INTERVAL = 1
+    REDIS_CONNECT_MAX_RETRIES = 10
+    REDIS_CONNECT_BASE_DELAY = 1.0
 
     def __init__(self):
         """Initialize worker."""
@@ -48,6 +51,101 @@ class Worker:
         self.db_engine = None
         self.db_session_factory = None
         self.running = False
+
+    async def _connect_redis_with_retry(self) -> redis.Redis:
+        """Connect to Redis with retry logic and health check.
+
+        Retries with exponential backoff until Redis is available.
+        Performs a ping check to verify the connection is working.
+
+        Returns:
+            redis.Redis: Verified Redis connection
+
+        Raises:
+            RedisConnectionError: If max retries exceeded
+        """
+        logger.info(
+            "Connecting to Redis",
+            extra={
+                "action": "connect_redis",
+                "status": "in_progress",
+                "redis_url": settings.redis_url.replace("@", "***@"),  # Hide creds
+                "max_retries": self.REDIS_CONNECT_MAX_RETRIES
+            }
+        )
+
+        last_exception = None
+
+        for attempt in range(self.REDIS_CONNECT_MAX_RETRIES):
+            try:
+                # Create Redis connection with socket timeout
+                client = redis.from_url(
+                    settings.redis_url,
+                    encoding="utf-8",
+                    decode_responses=True,
+                    socket_connect_timeout=5,
+                    socket_keepalive=True,
+                    health_check_interval=30
+                )
+
+                # Verify connection with ping - this forces actual connection
+                await client.ping()
+
+                logger.info(
+                    "Redis connection established",
+                    extra={
+                        "action": "connect_redis",
+                        "status": "success",
+                        "attempt": attempt + 1
+                    }
+                )
+
+                return client
+
+            except RedisConnectionError as e:
+                last_exception = e
+                delay = self.REDIS_CONNECT_BASE_DELAY * (2 ** attempt)
+
+                if attempt < self.REDIS_CONNECT_MAX_RETRIES - 1:
+                    logger.warning(
+                        f"Redis connection attempt {attempt + 1}/{self.REDIS_CONNECT_MAX_RETRIES} failed: {e}",
+                        extra={
+                            "action": "connect_redis",
+                            "status": "retrying",
+                            "attempt": attempt + 1,
+                            "max_retries": self.REDIS_CONNECT_MAX_RETRIES,
+                            "delay": delay,
+                            "error": str(e)
+                        }
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        f"Max Redis connection retries ({self.REDIS_CONNECT_MAX_RETRIES}) exceeded",
+                        extra={
+                            "action": "connect_redis",
+                            "status": "failed",
+                            "max_retries": self.REDIS_CONNECT_MAX_RETRIES,
+                            "error": str(e)
+                        }
+                    )
+                    raise RedisConnectionError(
+                        f"Failed to connect to Redis after {self.REDIS_CONNECT_MAX_RETRIES} attempts. "
+                        f"Last error: {e}"
+                    ) from e
+
+            except Exception as e:
+                last_exception = e
+                logger.error(
+                    f"Unexpected error connecting to Redis: {e}",
+                    extra={
+                        "action": "connect_redis",
+                        "status": "error",
+                        "attempt": attempt + 1,
+                        "error": str(e)
+                    }
+                )
+                raise
 
     async def start(self):
         """Start the worker."""
@@ -59,12 +157,8 @@ class Worker:
             }
         )
 
-        # Connect to Redis
-        self.redis = redis.from_url(
-            settings.redis_url,
-            encoding="utf-8",
-            decode_responses=True
-        )
+        # Connect to Redis with retry logic and health check
+        self.redis = await self._connect_redis_with_retry()
 
         # Connect to database
         self.db_engine = create_async_engine(settings.database_url, echo=False)

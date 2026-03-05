@@ -28,6 +28,7 @@ class JobResponse(JobBase):
     status: str = Field(default="discovered", description="Job status")
     discovered_at: datetime = Field(..., description="When job was discovered")
     updated_at: datetime = Field(..., description="Last update time")
+    match_score: Optional[int] = Field(None, description="Match score 0-100 calculated based on resume vs job requirements")
 
     model_config = {"from_attributes": True}
 
@@ -53,3 +54,11 @@ class JobSearchStatusResponse(BaseModel):
     jobs_found: Optional[int] = Field(None, description="Number of jobs found")
     created_at: Optional[datetime] = Field(None, description="Task creation time")
     completed_at: Optional[datetime] = Field(None, description="Task completion time")
+
+
+class JobMatchScoreResponse(BaseModel):
+    """Schema for job match score response."""
+    job_id: str = Field(..., description="Job ID")
+    score: int = Field(..., ge=0, le=100, description="Match score 0-100")
+    max_score: int = Field(default=100, description="Maximum possible score")
+    percentage: str = Field(..., description="Formatted percentage string")
